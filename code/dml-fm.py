@@ -87,18 +87,112 @@ def DGP(S: int, N: int, T: int,
         
     return R, H, G, F, e, Gamma_beta, Gamma_delta
 
-# Function to perform lasso; look how sklearn does it so i write it from scratch
-# -go scope how Denis runs it in his class
+# Function
+# Purpose: perform lasso of Y on X
+#
+# Input args:
+# -argument on whether to normalize the X's
+# -lasso penalty
+# -Y
+# -X
+# -look thru other arguments in Lasso function
+#
+# Output args:
+# -beta hats
+# 
+# Steps inside function:
+# -normalize X's if asked to do so
+# -fit Lasso
+# -Return the beta hats
 
-# Function to perform OLS from scratch with closed form
+'''
+muhat = np.mean(X,axis = 0)
+stdhat = np.std(X,axis = 0)
+Xtilde = (X − muhat )/ stdhat
+y = boston . target
+lasso = Lasso ( alpha = 1.3)
+lasso.fit(Xtilde ,y)
+coef = lasso . coef_
 
-# Function to run DL
-# takes argument of set of controls of interest
-# return the treatment parameter
+sigma = np.std(y)
+(n,p) = X.shape
+Xscale = np.max(np.mean ((X ∗∗ 2), axis =0)) ∗∗ 0.5
+c = 1.1; a = 0.05
+lamb = 2 ∗ c ∗ sigma ∗ norm.ppf(1−a/(2 ∗ p)) ∗ Xscale /np.sqrt(n)
+lamb1 = 2 ∗ c ∗ sigma ∗ norm.ppf(1−a/(2 ∗ p))/ np.sqrt(n)
+print (lamb)
+print (lamb1 )
+'''
 
-# Function to run my procedure
-# -call all the above functions
-# return the vector of gmma beta j so parallize across the p runs of this within this function
+
+# Function 
+# Purpose: perform OLS from scratch with closed form
+#
+# Input args:
+# -Y
+# -X
+# -look thru other arguments in linear reg function to see if to specify anything
+#
+# Output args:
+# -beta hats
+# 
+# Steps inside function:
+# -fit
+# -Return the beta hats
+
+'''
+n,p = df.shape
+lnw = np.array (df["lnw"], ndmin = 2).T
+female = np. array (df[" female "], ndmin = 2).T
+lhs = np.array (df["lhs"], ndmin = 2).T
+hsg = np.array (df["hsg"], ndmin = 2).T
+sc = np.array (df["sc"], ndmin = 2).T
+cg = np.array (df["cg"], ndmin = 2).T
+cons = np.ones ([n ,1])
+X = np. concatenate (( cons ,female ,lhs ,hsg ,sc ,cg), axis = 1)
+Y = lnw
+betahat = np. linalg .inv(X.T @ X) @ (X.T @ Y)
+ehat = Y − X @ betahat
+Sigmahat = (X ∗ ehat ).T @ (X ∗ ehat) / n
+Qhat = np. linalg .inv(X.T @ X / n)
+Vhat = Qhat @ Sigmahat @ Qhat
+sdhat = np.sqrt(Vhat [1 ,1]) / np.sqrt(n)
+cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
+'''
+
+# Function
+# Purpose: perform DL
+#
+# Input args:
+# -set of controls of interest
+# -Y
+# -D
+# -X
+#
+# Output args:
+# -treatment parameter
+# 
+# Steps inside function:
+# -follow my estimation procedure to perform just the steps inside the first step
+# -Return the beta hats
+
+
+# Function 
+# Purpose: perform my estimation procedure
+#
+# Input args:
+# -et of controls of interest
+# -
+# -
+# -
+#
+# Output args:
+# -the vector of gmma beta j so parallize across the p runs of this within this function
+# 
+# Steps inside function:
+# -
+# -
+# 
 
 # Function to run the simulation so call my estimation in parallel across all the simulations
 
