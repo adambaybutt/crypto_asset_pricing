@@ -173,26 +173,31 @@ cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
 # -treatment parameter
 # 
 # Steps inside function:
-# -follow my estimation procedure to perform just the steps inside the first step
-# -Return the beta hats
+# -lasso of Y on D and X to select elements
+# -lasso of D on X to select elements
+# -take the union of all three
+# -OLS of Y on D plus that union
+# -Return h t j which is parameter on D
 
 
 # Function 
 # Purpose: perform my estimation procedure
 #
 # Input args:
-# -et of controls of interest
-# -
-# -
-# -
+# -set of controls of interest
+# -returns
+# -G
+# -Z
 #
 # Output args:
-# -the vector of gmma beta j so parallize across the p runs of this within this function
-# 
+# -the vector of gmma beta 
+#
 # Steps inside function:
-# -
-# -
-# 
+# -parallelize across j:
+# --parallelize across each t, do DL for h t j
+# --put all the h_t_j together for H_j
+# --OLS of H on G to return each gamma beta j
+# -put the gamma beta j together for single vector to return
 
 # Function to run the simulation so call my estimation in parallel across all the simulations
 
