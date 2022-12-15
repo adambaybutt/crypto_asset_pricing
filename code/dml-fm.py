@@ -123,6 +123,7 @@ lamb = 2 ∗ c ∗ sigma ∗ norm.ppf(1−a/(2 ∗ p)) ∗ Xscale /np.sqrt(n)
 lamb1 = 2 ∗ c ∗ sigma ∗ norm.ppf(1−a/(2 ∗ p))/ np.sqrt(n)
 print (lamb)
 print (lamb1 )
+no need to do these prints
 '''
 
 
