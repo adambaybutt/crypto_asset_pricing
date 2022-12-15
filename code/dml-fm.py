@@ -4,7 +4,7 @@ import numpy as np
 def DGP(S: int, N: int, T: int, 
         p: int, l: int, k: int, sparse: int, 
         rho: float, sigma_eps: float) -> tuple:
-    ''' Generate random variables for simulation.
+    ''' Generate random variables and parameters for simulation.
 
     Args: 
         S (int): number of simulations.
@@ -20,33 +20,34 @@ def DGP(S: int, N: int, T: int,
     Returns: 
         (tuple):
             - R (np.ndarray): outcome/returns matrix of dimensions T*N, 1, S.
-            - H (np.ndarray): true factor model of dimensions T, p, S.
+            - H (np.ndarray): true factor model of dimensions T, p+1, S.
             - G (np.ndarray): true observable factors of dimensions T, l, S.
             - F (np.ndarray): true latent factors of dimensions T, k, S.
             - e (np.ndarray): true idiosyncratic error of dimensions T*N, 1, S.
-            - Gamma_beta (np.ndarray): true loading on observable factors of dim p by 1.
-            - Gamma_delta (np.ndarray): true loading on latent factors of dim p by 1.
+            - Gamma_beta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
+            - Gamma_delta (np.ndarray): true loading on latent factors of dim (p+1) by 1.
     '''
     # Initialize data objects 
     R = np.zeros((T*N, 1, S), dtype=float)
-    Z = np.zeros((T*N, p, S), dtype=float)
-    H = np.zeros((T, p, S), dtype=float)
+    Z = np.zeros((T*N, p+1, S), dtype=float)
+    H = np.zeros((T, p+1, S), dtype=float)
     G = np.zeros((T, l, S), dtype=float)
     F = np.zeros((T, k, S), dtype=float)
     e = np.zeros((T*N, 1, S), dtype=float)
 
     # Initialize parameters
-    Gamma_beta = np.zeros((p, 1))
-    Gamma_delta = np.zeros((p, 1))
+    Gamma_beta = np.zeros((p+1, l))
+    Gamma_delta = np.zeros((p+1, k))
     for i in range(sparse):
-        Gamma_beta[i, 0] = 1
-        Gamma_delta[i, 0] = 1
-    # TODO: FIX THE ABOVE TO MAKE THESE l and k matrices
+        for j in range(l):
+            Gamma_beta[i, j] = 1
+        for j in range(k):
+            Gamma_delta[i, j] = 1
 
     # Create Z covariance matrix
-    Z_covar = np.zeros((p,p))
-    for i in range(0,p):
-        for j in range(0,p):
+    Z_covar = np.zeros((p+1,p+1))
+    for i in range(0,p+1):
+        for j in range(0,p+1):
             Z_covar[i,j] = rho**(np.abs(i-j))
 
     # Generate data for each simulation
@@ -55,7 +56,7 @@ def DGP(S: int, N: int, T: int,
         np.random.seed(s)
 
         # Form G
-        phi_g = 0.5
+        phi_g = 0.8
         sigma_eps_g = 1
         g_eps       = np.random.normal(scale=sigma_eps_g, size=(T, l))
         G[0, :, s] = g_eps[0, :]
@@ -64,7 +65,7 @@ def DGP(S: int, N: int, T: int,
         G[:, 0, s] = G[:, 0, s] - np.mean(G[:, 0, s])
 
         # Form F
-        phi_f = 0.5
+        phi_f = 0.7
         sigma_eps_f = 1
         f_eps       = np.random.normal(scale=sigma_eps_f, size=(T,k))
         F[0, :, s] = f_eps[0,:]
@@ -73,18 +74,18 @@ def DGP(S: int, N: int, T: int,
         F[:, :, s] = F[:, :, s] - np.mean(F[:, :, s], axis=0)
 
         # Form Z
-        Z[:, :, s] = np.random.multivariate_normal(np.zeros(p), Z_covar, size=T*N)
+        Z[:, :, s] = np.random.multivariate_normal(np.zeros(p+1), Z_covar, size=T*N)
 
         # Form idiosyncratic errors
         e[:,:,s] = np.random.multivariate_normal([0], [[sigma_eps**2]], size=T*N)
 
         # Form H
-        # H[:,:,s] = G for each time for all l elements times matrix Gamma beta which is l times p + 
-        #            F for each time for all the k terms times Gamma delta which is k times p 
-        
+        H[:,:,s] = np.matmul(G[:,:,s], np.transpose(Gamma_beta)) + \
+                    np.matmul(F[:,:,s], np.transpose(Gamma_delta))
+
         # Form outcome/returns
-        # R[:,:,s] = Z times H where its each z_it of length p times ht of length p.
-        
+        R[:,:,s] = np.sum(Z[:,:,s]*np.repeat(H[:,:,s], N, axis=0),axis=1).reshape(-1,1) + e[:,:,s]
+
     return R, H, G, F, e, Gamma_beta, Gamma_delta
 
 # Function
@@ -206,3 +207,20 @@ cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
 # TODO:
 # -Split out all my estimation code into a separate file (i.e. this file) and then just import those functions into a new file
 # --read any formating on how to do this nicely
+
+
+# Function
+# main
+
+# set simulation parameters
+S = 200
+N = 200
+T = 200
+p = 20
+l = 1 
+k = 2
+sparse = 5
+rho = 0.1
+sigma_eps = 0.1
+
+R, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, sigma_eps)
