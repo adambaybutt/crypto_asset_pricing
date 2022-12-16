@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+from sklearn.linear_model import Lasso
+from scipy.stats import norm
 
 def DGP(S: int, N: int, T: int, 
         p: int, l: int, k: int, sparse: int, 
@@ -106,26 +108,60 @@ def DGP(S: int, N: int, T: int,
 # -fit Lasso
 # -Return the beta hats
 
-'''
-muhat = np.mean(X,axis = 0)
-stdhat = np.std(X,axis = 0)
-Xtilde = (X − muhat )/ stdhat
-y = boston . target
-lasso = Lasso ( alpha = 1.3)
-lasso.fit(Xtilde ,y)
-coef = lasso . coef_
+def runLasso(Y: np.array, X: np.matrix, penalty: float) -> np.array:
+    ''' Runs lasso of Y on X with given penalty param to return fitted coefs.
 
-sigma = np.std(y)
-(n,p) = X.shape
-Xscale = np.max(np.mean ((X ∗∗ 2), axis =0)) ∗∗ 0.5
-c = 1.1; a = 0.05
-lamb = 2 ∗ c ∗ sigma ∗ norm.ppf(1−a/(2 ∗ p)) ∗ Xscale /np.sqrt(n)
-lamb1 = 2 ∗ c ∗ sigma ∗ norm.ppf(1−a/(2 ∗ p))/ np.sqrt(n)
-print (lamb)
-print (lamb1 )
-no need to do these prints
-'''
+    Args: 
+        X (np.matrix): RHS variables with rows of obs and cols of covars.
+                       These data include a constant but have yet to be
+                       normalized for lasso.
+        Y (np.array): LHS variable with rows of obs and single column.
+        penalty (float): real-valued scalar on L1 penalty in Lasso.
 
+    Returns:
+        beta_hat (np.array): vector of fitted coefficients; note: these
+                             must be used on normalized RHS variables.
+    '''
+    # normalize RHS
+    muhat  = np.mean(X, axis = 0)
+    stdhat = np.std(X, axis = 0)
+    Xtilde = np.divide(np.subtract(X, muhat), stdhat)
+
+    # perform lasso
+    lasso = Lasso(alpha = penalty)
+    lasso.fit(Xtilde, Y)
+
+    # return fitted coefficients
+    return lasso.coef_
+
+def calcPenaltyBCCH(Y: np.array, X: np.matrix) -> float:
+    ''' This function applies Belloni, Chen, Chernozhukov, Hansen 2012 ECMA
+        closed-form solution for selecting Lasso penalty parmaeter.
+
+    Args: 
+        X (dict): mumbo jumbo.
+
+    Returns:
+        zee_obj (np.array): mumbo jumbo.
+    '''
+    # Bickel Ritov Tsybakov constant parameter selection
+    c = 1.1
+    a = 0.05
+
+    # calc pilot penalty parameter
+    N = X.shape[0]
+    p = X.shape[1]
+    max_moment_xy = np.max(np.mean((X**2)*(Y**2), axis =0)**0.5) 
+    penalty_pilot = 2*c*norm.ppf(1-a/(2*p))*max_moment_xy/np.sqrt(N)
+
+    # run lasso with pilot penalty parameter
+
+    # set BCCH penalty parameter
+    residuals = Y - np.matmul(X, beta_hat)
+    max_moment_xepi = np.max(np.mean((X**2)*(residuals**2), axis =0)**0.5) 
+    penalty = 2*c*norm.ppf(1-a/(2*p))*max_moment_xepi/np.sqrt(N)
+
+    return penalty
 
 # Function 
 # Purpose: perform OLS from scratch with closed form
@@ -141,6 +177,23 @@ no need to do these prints
 # Steps inside function:
 # -fit
 # -Return the beta hats
+
+def funcName(X: dict) -> np.array:
+    ''' This function does X.
+
+    Args: 
+        X (dict): mumbo jumbo.
+
+    Returns:
+        zee_obj (np.array): mumbo jumbo.
+    '''
+    # step 1
+
+    # step 2
+
+    # step 3
+
+    return np.array([1])
 
 '''
 n,p = df.shape
@@ -181,6 +234,23 @@ cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
 # -OLS of Y on D plus that union
 # -Return h t j which is parameter on D
 
+def funcName(X: dict) -> np.array:
+    ''' This function does X.
+
+    Args: 
+        X (dict): mumbo jumbo.
+
+    Returns:
+        zee_obj (np.array): mumbo jumbo.
+    '''
+    # step 1
+
+    # step 2
+
+    # step 3
+
+    return np.array([1])
+
 
 # Function 
 # Purpose: perform my estimation procedure
@@ -192,7 +262,7 @@ cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
 # -Z
 #
 # Output args:
-# -the vector of gmma beta 
+# -the vector of gamma beta 
 #
 # Steps inside function:
 # -parallelize across j:
@@ -201,7 +271,42 @@ cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
 # --OLS of H on G to return each gamma beta j
 # -put the gamma beta j together for single vector to return
 
+def funcName(X: dict) -> np.array:
+    ''' This function does X.
+
+    Args: 
+        X (dict): mumbo jumbo.
+
+    Returns:
+        zee_obj (np.array): mumbo jumbo.
+    '''
+    # step 1
+
+    # step 2
+
+    # step 3
+
+    return np.array([1])
+
+
 # Function to run the simulation so call my estimation in parallel across all the simulations
+
+def funcName(X: dict) -> np.array:
+    ''' This function does X.
+
+    Args: 
+        X (dict): mumbo jumbo.
+
+    Returns:
+        zee_obj (np.array): mumbo jumbo.
+    '''
+    # step 1
+
+    # step 2
+
+    # step 3
+
+    return np.array([1])
 
 # Main function to build the data and then call the function to run the simulation
 
@@ -214,7 +319,7 @@ cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
 # main
 
 # set simulation parameters
-S = 200
+S = 10 # TODO CHANGE BACK TO 200
 N = 200
 T = 200
 p = 20
