@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import Lasso
 from scipy.stats import norm
+from joblib import Parallel, delayed
 
 def DGP(S: int, N: int, T: int, 
         p: int, l: int, k: int, sparse: int, 
@@ -188,7 +189,7 @@ def runDoubleLasso(Y: np.ndarray, D: np.ndarray, X: np.ndarray,
 
     # form union of I_1_hat, I_2_hat, and amel_set
     i_1_hat = list(np.nonzero(beta_hat_1)[0]-1)
-    i_1_hat.remove(-1) # remove treatment variable if it was included
+    if -1 in i_1_hat: i_1_hat.remove(-1) # remove treatment variable if it was included
     i_2_hat = list(np.nonzero(beta_hat_2)[0])
     i_3_hat = amel_set
     i_hat   = list(set(i_1_hat).union(set(i_2_hat), set(i_3_hat)))
@@ -226,81 +227,163 @@ def runEstimation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
     p = int(Z.shape[1]-1)
     l = G.shape[1]
     H_hat = np.zeros((T, p+1), dtype=float)
-    Gamma_beta_hat = np.zeros((p+1, l), dtype=float)
     
-    for j in range(p+1): # for all covariates
-        print(j) # TODO REMOVE
-        for t in range(T): # for all time periods   
-            print(t) # TODO REMOVE
+    def runForEachCovariate(j):
+        # form indices
+        minus_j = list(range(p+1))
+        minus_j.remove(j)
+  
+        def runForEachTimePeriod(t):
             # form indices
             start_ob = int(t*N)
             last_ob  = int((t+1)*N)
-            minus_j = list(range(p+1))
-            minus_j.remove(j)
 
             # form this time periods LHS, target, and controls
             Y = R[start_ob:last_ob,:]
-            D = Z[start_ob:last_ob,j]
+            D = Z[start_ob:last_ob,j].reshape(-1,1)
             X = Z[start_ob:last_ob,minus_j]
 
             # estimate h_{t,j}, i.e. target coef
             h_t_j = runDoubleLasso(Y, D, X, amel_set, c)
 
             # save h_{t,j}
-            H_hat[t,j] = h_t_j
+            return h_t_j
 
-        # estimate \Gamma_{\beta,j} using all time periods
-        Gamma_beta_hat[j,:] = runOLS(H_hat[:,j], G)
+        # estimate h_{t,j} for all time periods and save
+        H_t_hat    = Parallel(n_jobs=2)(delayed(runForEachTimePeriod)(t) for t in range(T))
+        H_hat[:,j] = np.array(H_t_hat)
 
-    return Gamma_beta_hat
+        # estimate 
+        return runOLS(H_hat[:,j], G)
 
-# Function to run the simulation so call my estimation in parallel across all the simulations
+    # estimate \Gamma_{\beta,j} using all time periods for all j
+    Gamma_beta_hat = Parallel(n_jobs=2)(delayed(runForEachCovariate)(j) for j in range(p+1))
 
-def funcName(X: dict) -> np.ndarray:
-    ''' This function does X.
+    return np.array(Gamma_beta_hat)
+
+def runSimulation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
+                  amel_set: list, c: float, num_cpus: int) -> tuple:
+    ''' Runs the simulation to estimate target parameters and return estimates across various
+        procedures for all monte carlo repetitions.
 
     Args: 
-        X (dict): mumbo jumbo.
+        R (np.ndarray):  outcome/returns ndarray of dimensions T*N by 1.
+        Z (np.ndarray):  covariates of dimensions T*N by (p+1).
+        G (np.ndarray):  true observable factors of dimensions T by l.
+        amel_set (list): column indices of X to manually include in final OLS reg,
+                         termed the amelioration set.
+        c (float):       scalar constant from theory; usually ~1.
+        num_cpus (int):  number of cpus on user machine.
+    
+    Returns: 
+        (tuple):
+            - Gamma_beta_hat_b (np.ndarray): estimated gamma beta for my proc of dim (p+1) by S.
+            - Gamma_beta_hat_ipca (np.ndarray): estimated gamma beta for ipca of dim (p+1) by S.
+    '''
+    def runForEachMCrep(s):
+        return runEstimation(R[:,:,s], Z[:,:,s], G[:,:,s], amel_set, c)
+    
+    # estimate \Gamma_\beta for each Monte Carlo repetition and clean up shape
+    # note: runEstimation will split each call across four cpus hince divide num_cpus by 4
+    Gamma_beta_hat_b = Parallel(n_jobs=int(num_cpus/4))(delayed(runForEachMCrep)(s) 
+                                                                for s in range(S))
+    Gamma_beta_hat_b = np.transpose(np.array(Gamma_beta_hat_b)[:,:,0])
+
+    return (Gamma_beta_hat_b, )
+
+def calcMSE(est: np.ndarray, param: np.ndarray) -> float:
+    ''' Calculate the mse between an estimator and parameter.
+    
+    Args:
+        est (np.ndarray): estimator of length of parameter by S.
+        param (np.ndarray): vector of parameter with single column.
+
+    Returns: 
+        mse (float): mean squared estimation error.
+    '''
+    return np.mean(np.square(est - param), axis=1)
+
+def calcBias2(est: np.ndarray, param: np.ndarray) -> float:
+    ''' Calculate the squared bias of estimation error between an estimator and parameter.
+    
+    Args:
+        est (np.ndarray): estimator of length of parameter by S.
+        param (np.ndarray): vector of parameter with single column.
+
+    Returns: 
+        bias2 (float): squared bias of estimation error.
+    '''
+    return np.square(np.mean(est, axis=1).reshape(-1,1) - param)
+
+def calcVar(est: np.ndarray, param: np.ndarray) -> float:
+    ''' Calculate the variation of estimation error between an estimator and parameter.
+    
+    Args:
+        est (np.ndarray): estimator of length of parameter by S.
+        param (np.ndarray): vector of parameter with single column.
+
+    Returns: 
+        bias2 (float): variance of estimation error.
+    '''
+    return np.square(est - np.mean(est, axis=1).reshape(-1,1))
+
+def calcEstimationErrors(Gamma_beta: np.ndarray, 
+                         Gamma_beta_hat_b: np.ndarray) -> tuple:
+    ''' Calculate estimation errors for procedures across simulations.
+    
+    Args:
+        Gamma_beta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
+        Gamma_beta_hat_b (np.ndarray): estimated gamma beta for my proc of dim (p+1) by S.
+        Gamma_beta_hat_ipca (np.ndarray): estimated gamma beta for ipca of dim (p+1) by S.
 
     Returns:
-        zee_obj (np.ndarray): mumbo jumbo.
+        (tuple):
+            - mse_b (float): estimated mse of my proc across simulations.
+            - bias2_b (float): estimated bias^2 of my proc across simulations.
+            - var_b (float):  estimated variance of my proc across simulations.
+            - mse_ipca (float): estimated mse of ipca across simulations.
+            - bias2_ipca (float): estimated bias^2 of ipca across simulations.
+            - var_ipca (float):  estimated variance of ipca across simulations.
     '''
-    # step 1
+    # calculate estimation errors of my procedure
+    mse_b   = np.mean(calcMSE(Gamma_beta_hat_b, Gamma_beta))
+    bias2_b = np.mean(calcBias2(Gamma_beta_hat_b, Gamma_beta))
+    var_b   = np.mean(calcVar(Gamma_beta_hat_b, Gamma_beta))
 
-    # step 2
+    return (mse_b, bias2_b, var_b, )
 
-    # step 3
+if __name__ == "__main__":
+    # set simulation parameters
+    num_cpus  = 20
+    amel_set  = [1]
+    c         = 0.1
+    rho       = 0.1
+    sigma_eps = 1
 
-    return np.ndarray([1])
+    S         = 10 # TODO CHANGE BACK TO 200
+    N         = 200
+    T         = 200
+    p         = 20
+    l         = 1 
+    k         = 2
+    sparse    = 5
 
-# Main function to build the data and then call the function to run the simulation
+    # build DGP
+    R, Z, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, sigma_eps)
+
+    # run simulation
+    Gamma_beta_hat_b, = runSimulation(R, Z, G, amel_set, c, num_cpus)
+
+    # calc estimation errors
+    mse_b, bias2_b, var_b, = calcEstimationErrors(Gamma_beta, Gamma_beta_hat_b)
+
+    # report
+    print('estimation errors for my procedure:')
+    print(f'bias2: {bias2_b}')
+    print(f'var: {var_b}')
+    print(f'mse: {mse_b}')
+    print('estimation errors for ipca:')
 
 # TODO:
 # -Split out all my estimation code into a separate file (i.e. this file) and then just import those functions into a new file
 # --read any formating on how to do this nicely
-
-
-# Function
-# main
-
-# set simulation parameters
-S = 10 # TODO CHANGE BACK TO 200
-N = 200
-T = 200
-p = 20
-l = 1 
-k = 2
-sparse = 5
-rho = 0.1
-sigma_eps = 1
-c         = 0.1
-
-R, Z, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, sigma_eps)
-
-Y=R[:N,:,0]
-D=Z[:N,0,0].reshape(-1,1)
-X=Z[:N,1:,0]
-amel_set=[1]
-
-Gamma_beta_hat_s = runEstimation(R[:,:,0], Z[:,:,0], G[:,:,0], amel_set, c)
-
