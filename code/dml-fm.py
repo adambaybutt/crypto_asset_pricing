@@ -21,7 +21,8 @@ def DGP(S: int, N: int, T: int,
     
     Returns: 
         (tuple):
-            - R (np.ndarray): outcome/returns matrix of dimensions T*N, 1, S.
+            - R (np.ndarray): outcome/returns ndarray of dimensions T*N, 1, S.
+            - Z (np.ndarray): covariates of dimensions T*N, p+1, S.
             - H (np.ndarray): true factor model of dimensions T, p+1, S.
             - G (np.ndarray): true observable factors of dimensions T, l, S.
             - F (np.ndarray): true latent factors of dimensions T, k, S.
@@ -46,7 +47,7 @@ def DGP(S: int, N: int, T: int,
         for j in range(k):
             Gamma_delta[i, j] = 1
 
-    # Create Z covariance matrix
+    # Create Z covariance ndarray
     Z_covar = np.zeros((p+1,p+1))
     for i in range(0,p+1):
         for j in range(0,p+1):
@@ -59,7 +60,7 @@ def DGP(S: int, N: int, T: int,
 
         # Form G
         phi_g = 0.8
-        sigma_eps_g = 1
+        sigma_eps_g = 0.1
         g_eps       = np.random.normal(scale=sigma_eps_g, size=(T, l))
         G[0, :, s] = g_eps[0, :]
         for t in range(1, T):
@@ -68,7 +69,7 @@ def DGP(S: int, N: int, T: int,
 
         # Form F
         phi_f = 0.7
-        sigma_eps_f = 1
+        sigma_eps_f = 0.1
         f_eps       = np.random.normal(scale=sigma_eps_f, size=(T,k))
         F[0, :, s] = f_eps[0,:]
         for t in range(1, T):
@@ -88,38 +89,20 @@ def DGP(S: int, N: int, T: int,
         # Form outcome/returns
         R[:,:,s] = np.sum(Z[:,:,s]*np.repeat(H[:,:,s], N, axis=0),axis=1).reshape(-1,1) + e[:,:,s]
 
-    return R, H, G, F, e, Gamma_beta, Gamma_delta
+    return R, Z, H, G, F, e, Gamma_beta, Gamma_delta
 
-# Function
-# Purpose: perform lasso of Y on X
-#
-# Input args:
-# -argument on whether to normalize the X's
-# -lasso penalty
-# -Y
-# -X
-# -look thru other arguments in Lasso function
-#
-# Output args:
-# -beta hats
-# 
-# Steps inside function:
-# -normalize X's if asked to do so
-# -fit Lasso
-# -Return the beta hats
-
-def runLasso(Y: np.array, X: np.matrix, penalty: float) -> np.array:
+def runLasso(Y: np.ndarray, X: np.ndarray, penalty: float) -> np.ndarray:
     ''' Runs lasso of Y on X with given penalty param to return fitted coefs.
 
     Args: 
-        X (np.matrix): RHS variables with rows of obs and cols of covars.
+        X (np.ndarray): RHS variables with rows of obs and cols of covars.
                        These data include a constant but have yet to be
                        normalized for lasso.
-        Y (np.array): LHS variable with rows of obs and single column.
+        Y (np.ndarray): LHS variable with rows of obs and single column.
         penalty (float): real-valued scalar on L1 penalty in Lasso.
 
     Returns:
-        beta_hat (np.array): vector of fitted coefficients; note: these
+        beta_hat (np.ndarray): vector of fitted coefficients; note: these
                              must be used on normalized RHS variables.
     '''
     # normalize RHS
@@ -134,19 +117,22 @@ def runLasso(Y: np.array, X: np.matrix, penalty: float) -> np.array:
     # return fitted coefficients
     return lasso.coef_
 
-def calcPenaltyBCCH(Y: np.array, X: np.matrix) -> float:
+def calcPenaltyBCCH(Y: np.ndarray, X: np.ndarray, c: float) -> float:
     ''' This function applies Belloni, Chen, Chernozhukov, Hansen 2012 ECMA
         closed-form solution for selecting Lasso penalty parmaeter.
 
     Args: 
-        X (dict): mumbo jumbo.
+        X (np.ndarray): RHS variables with rows of obs and cols of covars.
+                       These data include a constant but have yet to be
+                       normalized for lasso.
+        Y (np.ndarray): LHS variable with rows of obs and single column.
+        c (float):    scalar constant from theory; usually ~1.
 
     Returns:
-        zee_obj (np.array): mumbo jumbo.
+        penalty (float): BCCH penalty parameter.
     '''
     # Bickel Ritov Tsybakov constant parameter selection
-    c = 1.1
-    a = 0.05
+    a = 0.1
 
     # calc pilot penalty parameter
     N = X.shape[0]
@@ -155,101 +141,68 @@ def calcPenaltyBCCH(Y: np.array, X: np.matrix) -> float:
     penalty_pilot = 2*c*norm.ppf(1-a/(2*p))*max_moment_xy/np.sqrt(N)
 
     # run lasso with pilot penalty parameter
+    beta_hat = runLasso(Y, X, penalty_pilot)
+    assert(~np.isclose(0, np.sum(np.abs(beta_hat)), rtol=1e-8, atol=1e-8)),('Pilot penalty kills all coefs. Scale down c?')
 
     # set BCCH penalty parameter
-    residuals = Y - np.matmul(X, beta_hat)
+    residuals = Y - np.matmul(X, beta_hat).reshape(-1,1)
     max_moment_xepi = np.max(np.mean((X**2)*(residuals**2), axis =0)**0.5) 
     penalty = 2*c*norm.ppf(1-a/(2*p))*max_moment_xepi/np.sqrt(N)
 
     return penalty
 
-# Function 
-# Purpose: perform OLS from scratch with closed form
-#
-# Input args:
-# -Y
-# -X
-# -look thru other arguments in linear reg function to see if to specify anything
-#
-# Output args:
-# -beta hats
-# 
-# Steps inside function:
-# -fit
-# -Return the beta hats
-
-def funcName(X: dict) -> np.array:
-    ''' This function does X.
+def runOLS(Y: np.ndarray, X: np.ndarray) -> np.ndarray:
+    ''' Runs OLS of Y on X to return fitted coefficients.
 
     Args: 
-        X (dict): mumbo jumbo.
+        X (np.ndarray): RHS--assumes contains constant--with rows of obs and cols of covars.
+        Y (np.ndarray): LHS variable with rows of obs and single column.
 
     Returns:
-        zee_obj (np.array): mumbo jumbo.
+        beta_hat (np.ndarray): vector of fitted coefficients.
     '''
-    # step 1
+    return np.matmul(np.linalg.inv(np.matmul(np.transpose(X), X)),
+                     np.matmul(np.transpose(X), Y))
 
-    # step 2
-
-    # step 3
-
-    return np.array([1])
-
-'''
-n,p = df.shape
-lnw = np.array (df["lnw"], ndmin = 2).T
-female = np. array (df[" female "], ndmin = 2).T
-lhs = np.array (df["lhs"], ndmin = 2).T
-hsg = np.array (df["hsg"], ndmin = 2).T
-sc = np.array (df["sc"], ndmin = 2).T
-cg = np.array (df["cg"], ndmin = 2).T
-cons = np.ones ([n ,1])
-X = np. concatenate (( cons ,female ,lhs ,hsg ,sc ,cg), axis = 1)
-Y = lnw
-betahat = np. linalg .inv(X.T @ X) @ (X.T @ Y)
-ehat = Y − X @ betahat
-Sigmahat = (X ∗ ehat ).T @ (X ∗ ehat) / n
-Qhat = np. linalg .inv(X.T @ X / n)
-Vhat = Qhat @ Sigmahat @ Qhat
-sdhat = np.sqrt(Vhat [1 ,1]) / np.sqrt(n)
-cil = betahat [1] − 1.96 ∗ sdhat; cir = betahat [1] + 1.96 ∗ sdhat
-'''
-
-# Function
-# Purpose: perform DL
-#
-# Input args:
-# -set of controls of interest
-# -Y
-# -D
-# -X
-#
-# Output args:
-# -treatment parameter
-# 
-# Steps inside function:
-# -lasso of Y on D and X to select elements
-# -lasso of D on X to select elements
-# -take the union of all three
-# -OLS of Y on D plus that union
-# -Return h t j which is parameter on D
-
-def funcName(X: dict) -> np.array:
-    ''' This function does X.
+def runDoubleLasso(Y: np.ndarray, D: np.ndarray, X: np.ndarray,
+                   amel_set: list, c: float) -> float:
+    ''' Runs Double Selection Lasso from Belloni et al (2014).
 
     Args: 
-        X (dict): mumbo jumbo.
+        Y (np.ndarray): LHS variable with rows of obs and single column.
+        D (np.ndarray): RHS target variable with rows of obs and single column.
+        X (np.ndarray): RHS controls with rows of obs and cols of covars.
+        amel_set (list): column indices of X to manually include in final OLS reg,
+                         termed the amelioration set.
 
     Returns:
-        zee_obj (np.array): mumbo jumbo.
+        alpha_hat (float): estimated target coefficient.
     '''
-    # step 1
+    # lasso of Y on D and X to select elements of X, I_1_hat
+    X_all = np.hstack((D,X))
+    beta_hat_1 = runLasso(Y, X_all, penalty=calcPenaltyBCCH(Y, X_all, c=c))
 
-    # step 2
+    # lasso of D on X to select elements of X, I_2_hat
+    beta_hat_2 = runLasso(D, X, penalty=calcPenaltyBCCH(D, X, c=c))
 
-    # step 3
+    # form union of I_1_hat, I_2_hat, and amel_set
+    i_1_hat = list(np.nonzero(beta_hat_1)[0]-1)
+    i_1_hat.remove(-1) # remove treatment variable if it was included
+    i_2_hat = list(np.nonzero(beta_hat_2)[0])
+    i_3_hat = amel_set
+    i_hat   = list(set(i_1_hat).union(set(i_2_hat), set(i_3_hat)))
+    print('Double Selection Lasso is using '
+          +str(int(len(i_hat)/X.shape[1]*100))
+          +'% of the columns of the controls.')
 
-    return np.array([1])
+    # OLS of Y on D plus included Xs
+    X_sel    = X[:,i_hat]
+    X_all    = np.hstack((D,X_sel))
+    beta_hat = runOLS(Y,X_all)
+    alpha_hat = beta_hat[0,0]
+
+    # return target parameter on D
+    return alpha_hat
 
 
 # Function 
@@ -271,14 +224,14 @@ def funcName(X: dict) -> np.array:
 # --OLS of H on G to return each gamma beta j
 # -put the gamma beta j together for single vector to return
 
-def funcName(X: dict) -> np.array:
+def runEstimation(amel_set: list, c: float) -> np.ndarray:
     ''' This function does X.
 
     Args: 
         X (dict): mumbo jumbo.
 
     Returns:
-        zee_obj (np.array): mumbo jumbo.
+        zee_obj (np.ndarray): mumbo jumbo.
     '''
     # step 1
 
@@ -286,19 +239,19 @@ def funcName(X: dict) -> np.array:
 
     # step 3
 
-    return np.array([1])
+    return np.ndarray([1])
 
 
 # Function to run the simulation so call my estimation in parallel across all the simulations
 
-def funcName(X: dict) -> np.array:
+def funcName(X: dict) -> np.ndarray:
     ''' This function does X.
 
     Args: 
         X (dict): mumbo jumbo.
 
     Returns:
-        zee_obj (np.array): mumbo jumbo.
+        zee_obj (np.ndarray): mumbo jumbo.
     '''
     # step 1
 
@@ -306,7 +259,7 @@ def funcName(X: dict) -> np.array:
 
     # step 3
 
-    return np.array([1])
+    return np.ndarray([1])
 
 # Main function to build the data and then call the function to run the simulation
 
@@ -327,6 +280,13 @@ l = 1
 k = 2
 sparse = 5
 rho = 0.1
-sigma_eps = 0.1
+sigma_eps = 1
+c         = 0.1
 
-R, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, sigma_eps)
+R, Z, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, sigma_eps)
+
+Y=R[:N,:,0]
+D=Z[:N,0,0].reshape(-1,1)
+X=Z[:N,1:,0]
+amel_set=[0,1]
+runDoubleLasso(Y,D,X,amel_set,c)
