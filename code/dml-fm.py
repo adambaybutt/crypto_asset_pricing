@@ -174,6 +174,7 @@ def runDoubleLasso(Y: np.ndarray, D: np.ndarray, X: np.ndarray,
         X (np.ndarray): RHS controls with rows of obs and cols of covars.
         amel_set (list): column indices of X to manually include in final OLS reg,
                          termed the amelioration set.
+        c (float):    scalar constant from theory; usually ~1.
 
     Returns:
         alpha_hat (float): estimated target coefficient.
@@ -204,43 +205,54 @@ def runDoubleLasso(Y: np.ndarray, D: np.ndarray, X: np.ndarray,
     # return target parameter on D
     return alpha_hat
 
-
-# Function 
-# Purpose: perform my estimation procedure
-#
-# Input args:
-# -set of controls of interest
-# -returns
-# -G
-# -Z
-#
-# Output args:
-# -the vector of gamma beta 
-#
-# Steps inside function:
-# -parallelize across j:
-# --parallelize across each t, do DL for h t j
-# --put all the h_t_j together for H_j
-# --OLS of H on G to return each gamma beta j
-# -put the gamma beta j together for single vector to return
-
-def runEstimation(amel_set: list, c: float) -> np.ndarray:
-    ''' This function does X.
+def runEstimation(R: np.ndarray, Z: np.ndarray, G: np.ndarray, 
+                  amel_set: list, c: float) -> np.ndarray:
+    ''' This function performs the estimation procedure from Baybutt (2022).
 
     Args: 
-        X (dict): mumbo jumbo.
+        R (np.ndarray):  outcome/returns ndarray of dimensions T*N by 1.
+        Z (np.ndarray):  covariates of dimensions T*N by (p+1).
+        G (np.ndarray):  true observable factors of dimensions T by l.
+        amel_set (list): column indices of X to manually include in final OLS reg,
+                         termed the amelioration set.
+        c (float):       scalar constant from theory; usually ~1.
 
     Returns:
-        zee_obj (np.ndarray): mumbo jumbo.
+        Gamma_beta_hat (np.ndarray): estimated loading on observable factors of dim (p+1) by 1.
     '''
-    # step 1
+    # initialize objects
+    T = G.shape[0]
+    N = int(R.shape[0]/T)
+    p = int(Z.shape[1]-1)
+    l = G.shape[1]
+    H_hat = np.zeros((T, p+1), dtype=float)
+    Gamma_beta_hat = np.zeros((p+1, l), dtype=float)
+    
+    for j in range(p+1): # for all covariates
+        print(j) # TODO REMOVE
+        for t in range(T): # for all time periods   
+            print(t) # TODO REMOVE
+            # form indices
+            start_ob = int(t*N)
+            last_ob  = int((t+1)*N)
+            minus_j = list(range(p+1))
+            minus_j.remove(j)
 
-    # step 2
+            # form this time periods LHS, target, and controls
+            Y = R[start_ob:last_ob,:]
+            D = Z[start_ob:last_ob,j]
+            X = Z[start_ob:last_ob,minus_j]
 
-    # step 3
+            # estimate h_{t,j}, i.e. target coef
+            h_t_j = runDoubleLasso(Y, D, X, amel_set, c)
 
-    return np.ndarray([1])
+            # save h_{t,j}
+            H_hat[t,j] = h_t_j
 
+        # estimate \Gamma_{\beta,j} using all time periods
+        Gamma_beta_hat[j,:] = runOLS(H_hat[:,j], G)
+
+    return Gamma_beta_hat
 
 # Function to run the simulation so call my estimation in parallel across all the simulations
 
@@ -288,5 +300,7 @@ R, Z, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, 
 Y=R[:N,:,0]
 D=Z[:N,0,0].reshape(-1,1)
 X=Z[:N,1:,0]
-amel_set=[0,1]
-runDoubleLasso(Y,D,X,amel_set,c)
+amel_set=[1]
+
+Gamma_beta_hat_s = runEstimation(R[:,:,0], Z[:,:,0], G[:,:,0], amel_set, c)
+
