@@ -1,4 +1,4 @@
-# High Dimensional Factor Models
+# Crypto Asset Pricing
 
 This repository contains the official code for building the data and implementing the empirical and Monte Carlo results in Baybutt (2022).
 
