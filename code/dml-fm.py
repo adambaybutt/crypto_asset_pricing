@@ -3,10 +3,187 @@ import numpy as np
 from sklearn.linear_model import Lasso
 from scipy.stats import norm
 from joblib import Parallel, delayed
+import statsmodels.api as sm
+import random
+
+def readAndPrepEmpiricalDataSource(fp: str, N: int):
+    ''' Read in the empirical data that will be used for the DGP.
+
+    TODO UPDATE THIS ENTIRE FUNC AS ALL THE CLEANING WILL BE DONE ELSEWHERE.
+    
+    Args:
+        fp (str): filepath to the data.
+        N (int): number of assets in the simulation.
+    
+    Returns: (tuple)
+        covar_df (pd.DataFrame): panel data of asset characteristics.
+        factor_df (pd.DataFrame): time series data of observable and latent factors.
+    '''
+    # read in the data
+    # TODO NEED TO UPDATE TO ACTUAL FILE CONTAINING PRE-BUILT FACTORS AND UNNORMALZIED COVARS
+    # TODO APPLY INCLUSION CRITERIA WITHIN THIS FUNCTION AS A FUNC CALL
+    df = pd.read_pickle(fp) 
+
+    # convert to weekly
+    df = df[df.date.dt.dayofweek == 6]
+
+    # drop any asset that does not have consecutive observations
+    for asset in list(np.unique(df.asset.values)):
+        asset_df = df[df.asset==asset].copy()
+        min_date = np.min(asset_df.date)
+        max_date = np.max(asset_df.date)
+        duration_weeks = int((max_date-min_date).days/7)
+        if asset_df.shape[0] != (duration_weeks+1):
+            df = df[df.asset!=asset]
+
+    # keep top N assets
+    assets = list(df[['asset']].value_counts()[:N].reset_index().asset.values)
+    df = df[df.asset.isin(assets)]
+
+    # keep relevant columns
+    cols_to_keep = ['date', 'asset', 
+                    'usd_mcap', 'social_volume_total_san', 'usd_trading_volume_24h',
+                    'usd_per_token', 'twitter_followers_coingecko', 'alexa_rank_coingecko',
+                    'circulating_supply_cmc', 'num_market_pairs_cmc', 
+                    'dev_activity_contributors_count_san', 'github_activity_san', 
+                    'sentiment_balance_total_san', 'sentiment_volume_consumed_total_san',
+                    'social_dominance_total_san']
+    df = df[cols_to_keep]
+
+    # impute missing with cross sectional mean for all cols
+    df.loc[(df.date==np.min(df.date)) & (df.asset=='monero'), 'social_dominance_total_san'] = 1
+    cols_to_clean = list(df.columns.values)
+    cols_to_clean.remove('date')
+    cols_to_clean.remove('asset')
+    weeks = list(np.unique(df.date))
+    for col in cols_to_clean:
+        number_missing = df[col].isnull().sum()
+        if number_missing > 0:
+            for week in weeks:
+                df.loc[df[col].isnull() & (df.date==week), col] = np.nanmedian(df[df.date<=week][col].values)
+
+    # form needed cols
+    df['log_p_t']            = np.log(df.usd_per_token)
+    df['r_t']                = df.groupby('asset')['usd_per_token'].pct_change(periods=1)
+    df['r_tm2']              = df.groupby('asset')['usd_per_token'].pct_change(periods=1)
+    df['r_tm4']              = df.groupby('asset')['usd_per_token'].pct_change(periods=1)
+    df['r_tm12']             = df.groupby('asset')['usd_per_token'].pct_change(periods=1)
+    df['avg_r_tm24']         = df.groupby('asset')['r_t'].transform(lambda x: x.rolling(24).mean())
+    df['avg_r_tm50']         = df.groupby('asset')['r_t'].transform(lambda x: x.rolling(50).mean())
+    df['vol_r_tm24']         = df.groupby('asset')['r_t'].transform(lambda x: x.rolling(24).std())
+    df['vol_r_tm50']         = df.groupby('asset')['r_t'].transform(lambda x: x.rolling(50).std())
+    df['kurt_r_tm24']        = df.groupby('asset')['r_t'].transform(lambda x: x.rolling(24).kurt())
+    df['volume_sum_tm24']    = df.groupby('asset')['usd_trading_volume_24h'].transform(lambda x: x.rolling(24).sum())
+    df['p_volume_log_t']     = np.log(df.usd_per_token) + np.log(df.usd_trading_volume_24h)
+    df['twitter_t']          = df['twitter_followers_coingecko']
+    df['alexa_t']            = df['alexa_rank_coingecko']
+    df['circ_supply_t']      = df['circulating_supply_cmc']
+    df['num_market_pairs_t'] = df['num_market_pairs_cmc']
+    df['dev_activ_t']        = df['dev_activity_contributors_count_san']
+    df['github_t']           = df['github_activity_san']
+    df['sent_bal_t']         = df['sentiment_balance_total_san']
+    df['sent_cnsmed_t']      = df['sentiment_volume_consumed_total_san']
+    df['social_dom_t']       = df['social_dominance_total_san']
+
+    # drop to time period of interest
+    df = df[df.date.dt.year.isin([2016, 2017, 2018, 2019, 2020, 2021])]
+    df = df.dropna()
+
+    # form factor df out of the factors
+    factors = ['r_tm4', 'usd_mcap', 'social_volume_total_san', 'usd_trading_volume_24h']
+    factor_df = df[['date', 'asset', 'r_t']+factors].copy()
+    factor_df['mcap_t'] = factor_df['usd_mcap']
+    factor_dfs = []
+    for factor in factors:
+        temp_df = factor_df[['date', 'asset', 'r_t', 'mcap_t', factor]]
+        temp_df = temp_df.sort_values(by=['date', factor])
+        temp_df['ranking'] = temp_df.groupby(['date']).cumcount()+1
+        temp_df['counts'] = 1
+        temp_df['assets_per_week'] = temp_df.groupby('date').counts.transform(lambda x: x.sum())
+        temp_df['ranking'] = temp_df.ranking / temp_df.assets_per_week
+        temp_df.loc[temp_df.ranking <= 1/3, 'tertile'] = 1
+        temp_df.loc[(temp_df.ranking > 1/3) & (temp_df.ranking <= 2/3), 'tertile'] = 2
+        temp_df.loc[(temp_df.ranking > 2/3) & (temp_df.ranking <= 1), 'tertile'] = 3
+
+        temp_df['mcap_sum']    = temp_df.groupby(['date', 'tertile'])['mcap_t'].transform('sum')
+        temp_df['weight']      = temp_df.mcap_t / temp_df.mcap_sum
+        temp_df['tertile_r_t'] = temp_df.weight * temp_df.r_t
+        temp_df['tertile_r_t'] = temp_df.groupby(['date', 'tertile'])['tertile_r_t'].transform('sum')
+        temp_df.drop_duplicates(['date', 'tertile'], inplace=True)
+        temp_df = temp_df[['date', 'tertile', 'tertile_r_t']]
+            
+        t3_df = temp_df[temp_df['tertile'] == 3].copy()
+        t1_df = temp_df[temp_df['tertile'] == 1].copy()
+        t3_df.rename(columns = {'tertile_r_t': 't3_r'}, inplace = True)
+        t1_df.rename(columns = {'tertile_r_t': 't1_r'}, inplace = True)
+        t3_1_df = t3_df.merge(t1_df, on='date', how='inner', validate='one_to_one')
+        t3_1_df['f_t'] = t3_1_df.t3_r - t3_1_df.t1_r 
+        t3_1_df = t3_1_df[['date','f_t']].copy()
+        t3_1_df = t3_1_df.rename(columns = {'f_t': factor})
+
+        factor_dfs.append(t3_1_df)
+
+    factor_df = factor_dfs[0].merge(factor_dfs[1], on='date', how='inner', validate='one_to_one')
+    factor_df = factor_df.merge(factor_dfs[2], on='date', how='inner', validate='one_to_one')
+    factor_df = factor_df.merge(factor_dfs[3], on='date', how='inner', validate='one_to_one')
+    factor_df = factor_df.rename(columns = {'usd_mcap': 'f_mcap_t',
+                                            'social_volume_total_san': 'f_social_t', 
+                                            'usd_trading_volume_24h': 'f_volume_t',
+                                            'r_tm4': 'g_rtm4_t'})
+
+    # form covar df
+    covar_df = df.copy()
+    covar_df = covar_df[['date', 'asset', 'log_p_t', 'r_t', 'r_tm2', 'r_tm12', 'avg_r_tm24', 
+                        'avg_r_tm50', 'vol_r_tm24', 'vol_r_tm50', 'kurt_r_tm24', 'volume_sum_tm24',
+                        'p_volume_log_t', 'twitter_t', 'alexa_t', 'circ_supply_t', 
+                        'num_market_pairs_t', 'dev_activ_t', 'github_t', 'sent_bal_t',
+                        'sent_cnsmed_t', 'social_dom_t']]
+
+    return (covar_df, factor_df)
+
+def simulateFactors(raw_factors: np.ndarray, T: int, s: int) -> np.ndarray:
+    ''' Use VAR to simulate requested factor matrix from empirical data in given factors object.
+    
+    Args:
+        raw_factors (np.ndarray): matrix of factors of dimensions T by number of factors.
+        T (int): number of time periods in the simulation.
+        s (int): simulation run to introduce randomness.
+
+    Returns:
+        new_factors (np.ndarray): simulated factors of dimensions T by number of cols in `factors'.
+    '''
+    # set seed
+    random.seed(s)
+
+    # set parameters
+    length_factors = raw_factors.shape[0]
+    num_factors    = raw_factors.shape[1]
+
+    # fit VAR(1) on the matrix
+    fitted_model = sm.tsa.VAR(raw_factors).fit(maxlags=1)
+
+    # simulate F using fitted VAR with normal innovations
+    num_resids       = fitted_model.resid.shape[0]
+    new_factors      = np.zeros((T, num_factors), dtype=float)
+    for t in range(T):
+        # bs sample a row of the residuals
+        epi_bs_row = random.randint(0,num_resids-1)
+
+        # bs sample a row of the data
+        f_bs_row = random.randint(0,length_factors-1)
+        f_bs_row   = raw_factors[f_bs_row,:].reshape(1, -1)
+
+        # simulate the factor with normal innovations
+        new_factors[t, :] = np.matmul(f_bs_row, fitted_model.coefs)+fitted_model.resid[epi_bs_row,:]
+
+    
+
+    return new_factors
 
 def DGP(S: int, N: int, T: int, 
         p: int, l: int, k: int, sparse: int, 
-        rho: float, sigma_eps: float) -> tuple:
+        rho: float, sigma_eps: float,
+        factor_df: pd.DataFrame, covar_df: pd.DataFrame) -> tuple:
     ''' Generate random variables and parameters for simulation.
 
     Args: 
@@ -60,22 +237,10 @@ def DGP(S: int, N: int, T: int,
         np.random.seed(s)
 
         # Form G
-        phi_g = 0.8
-        sigma_eps_g = 0.1
-        g_eps       = np.random.normal(scale=sigma_eps_g, size=(T, l))
-        G[0, :, s] = g_eps[0, :]
-        for t in range(1, T):
-            G[t, :, s] = phi_g*G[t-1, :, s] + g_eps[t, :]
-        G[:, 0, s] = G[:, 0, s] - np.mean(G[:, 0, s])
+        #G[:, :, s] = simulateFactors(factor_df[['g_rtm4_t']].values, T, s)
 
         # Form F
-        phi_f = 0.7
-        sigma_eps_f = 0.1
-        f_eps       = np.random.normal(scale=sigma_eps_f, size=(T,k))
-        F[0, :, s] = f_eps[0,:]
-        for t in range(1, T):
-            F[t, :, s] = phi_f*F[t-1, :, s] + f_eps[t, :]
-        F[:, :, s] = F[:, :, s] - np.mean(F[:, :, s], axis=0)
+        F[:, :, s] = simulateFactors(factor_df.drop(columns=['date', 'g_rtm4_t']).values, T, s)
 
         # Form Z
         Z[:, :, s] = np.random.multivariate_normal(np.zeros(p+1), Z_covar, size=T*N)
@@ -365,11 +530,17 @@ if __name__ == "__main__":
     T         = 200
     p         = 20
     l         = 1 
-    k         = 2
+    k         = 3
     sparse    = 5
 
+    emp_data_fp = '../data/derived/old_panel_use_temp_until_new.pkl'
+
+    # obtain the empirical data needed for DGP simulations
+    covar_df, factor_df = readAndPrepEmpiricalDataSource(emp_data_fp, N)
+
     # build DGP
-    R, Z, H, G, F, e, Gamma_beta, Gamma_delta =  DGP(S, N, T, p, l, k, sparse, rho, sigma_eps)
+    R, Z, H, G, F, e, Gamma_beta, Gamma_delta = DGP(S, N, T, p, l, k, sparse, rho, sigma_eps,
+                                                    factor_df, covar_df)
 
     # run simulation
     Gamma_beta_hat_b, = runSimulation(R, Z, G, amel_set, c, num_cpus)
@@ -384,6 +555,48 @@ if __name__ == "__main__":
     print(f'mse: {mse_b}')
     print('estimation errors for ipca:')
 
+
+
+
+
+
+
+# TODO NEED TO UPDATE THIS SIMULATION OF VAR DATA AS I DONT THINK IT IS QUITE RIGHT
+    # -adjust to just simulate episilon using normal random variable with mean and std from residuals
+    # -adjust to use AutoReg(data, lags=1).fit() if it is a univariate time series
+
+
+# TODO: CALL FUNC TO GEN G_T AND F_T FROM THE DGP FUNC
+
+# TODO: WRITE FUNCTION TO SIM INSTRUMENTS FORM ITS DATA
+# $z_{i,t-1}$ simulated from in a similar way from the empirical data using p = 20 
+# Calculate the time series average of each instrument and de-mean them.
+# Estimate a VAR(1) on the entire panel of de-meaned instruments.
+# For each asset, (i) simulate each mean-zero instrument from the VAR(1) model with normal innovations and (ii) generate and add in the mean of each instrument as an BS draw with equal weights from empirical disribution of time series means.
+# Randomly column sort the instruments to ensure no order bias to them given sparsity.
+
+# TODO: CALL FUNC TO SIM INSTRUMENTS FROM THE DGP FUNC
+
+# TODO: ADJUST EPI IN DGP FUNC TO EDIT EPSILON TO CALIBRATE VARIANCE BASED ON R^2
+
+# TODO: ADJUST DGP FUNC FOR SPARSITY to be a switch for dense or approximate.
+
+# TODO: ADJUST DGP FUNC to output 7 stat summary of returns so I can calibrate accordingly to make it look legit
+
+# TODO: Set all options such that I can generate DGP however I want.
+
+# TODO: Generate my results on smallest DGP to see how long it takes; do napkin math on largest; run it overnight to actually time and take a note of it somewhere so I know for future.
+
+#
+import os
+os.chdir('/home/baybutt/Dropbox/2-creations/2-crafts/4-i_research/2-research/2022-jmp/jmp/code')
+os.getcwd()
+
+
+
+
+
 # TODO:
 # -Split out all my estimation code into a separate file (i.e. this file) and then just import those functions into a new file
 # --read any formating on how to do this nicely
+# -Number this file appropriately given the rest of the code
