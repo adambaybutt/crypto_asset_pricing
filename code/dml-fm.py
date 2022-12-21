@@ -4,7 +4,7 @@ from sklearn.linear_model import Lasso
 from scipy.stats import norm
 from joblib import Parallel, delayed
 import statsmodels.api as sm
-import random
+from ipca import InstrumentedPCA
 
 def readAndPrepEmpiricalDataSource(fp: str, N: int):
     ''' Read in the empirical data that will be used for the DGP.
@@ -41,28 +41,28 @@ def readAndPrepEmpiricalDataSource(fp: str, N: int):
     df = df[df.asset.isin(assets)]
 
     # keep relevant columns
-    cols_to_keep = ['date', 'asset', 
+    covar_cols_to_keep = ['date', 'asset', 
                     'usd_mcap', 'social_volume_total_san', 'usd_trading_volume_24h',
                     'usd_per_token', 'twitter_followers_coingecko', 'alexa_rank_coingecko',
                     'circulating_supply_cmc', 'num_market_pairs_cmc', 
                     'dev_activity_contributors_count_san', 'github_activity_san', 
                     'sentiment_balance_total_san', 'sentiment_volume_consumed_total_san',
                     'social_dominance_total_san']
-    df = df[cols_to_keep]
+    df = df[covar_cols_to_keep]
 
-    # impute missing with cross sectional mean for all cols
+    # impute missing with cross sectional mean for all covar_cols
     df.loc[(df.date==np.min(df.date)) & (df.asset=='monero'), 'social_dominance_total_san'] = 1
-    cols_to_clean = list(df.columns.values)
-    cols_to_clean.remove('date')
-    cols_to_clean.remove('asset')
+    covar_cols_to_clean = list(df.columns.values)
+    covar_cols_to_clean.remove('date')
+    covar_cols_to_clean.remove('asset')
     weeks = list(np.unique(df.date))
-    for col in cols_to_clean:
+    for col in covar_cols_to_clean:
         number_missing = df[col].isnull().sum()
         if number_missing > 0:
             for week in weeks:
                 df.loc[df[col].isnull() & (df.date==week), col] = np.nanmedian(df[df.date<=week][col].values)
 
-    # form needed cols
+    # form needed covar_cols
     df['log_p_t']            = np.log(df.usd_per_token)
     df['r_t']                = df.groupby('asset')['usd_per_token'].pct_change(periods=1)
     df['r_tm2']              = df.groupby('asset')['usd_per_token'].pct_change(periods=1)
@@ -141,47 +141,44 @@ def readAndPrepEmpiricalDataSource(fp: str, N: int):
 
     return (covar_df, factor_df)
 
-def simulateFactors(raw_factors: np.ndarray, T: int, s: int) -> np.ndarray:
+def simulateFactors(raw_factors: np.ndarray, T: int, S: int) -> np.ndarray:
     ''' Use VAR to simulate requested factor matrix from empirical data in given factors object.
     
     Args:
         raw_factors (np.ndarray): matrix of factors of dimensions T by number of factors.
         T (int): number of time periods in the simulation.
-        s (int): simulation run to introduce randomness.
+        S (int): number of simulations to run.
 
     Returns:
-        new_factors (np.ndarray): simulated factors of dimensions T by number of cols in `factors'.
+        new_factors (np.ndarray): sim'ed factors of dimensions T * number of covar_cols in `factors' * S.
     '''
-    # set seed
-    random.seed(s)
 
-    # set parameters
-    length_factors = raw_factors.shape[0]
+    # create objects
     num_factors    = raw_factors.shape[1]
+    new_factors    = np.zeros((T, num_factors, S), dtype=float)
 
-    # fit VAR(1) on the matrix
-    fitted_model = sm.tsa.VAR(raw_factors).fit(maxlags=1)
+    # fit VAR(1) if num_factors >= 2
+    if num_factors >= 2:
+        # fit VAR(1) on the matrix
+        fitted_model = sm.tsa.VAR(raw_factors).fit(maxlags=1)
 
-    # simulate F using fitted VAR with normal innovations
-    num_resids       = fitted_model.resid.shape[0]
-    new_factors      = np.zeros((T, num_factors), dtype=float)
-    for t in range(T):
-        # bs sample a row of the residuals
-        epi_bs_row = random.randint(0,num_resids-1)
+        # simulate new factors using fitted VAR with normal innovations
+        for s in range(S):
+            new_factors[:,:,s] = fitted_model.simulate_var(steps=T, seed=s)
+    elif num_factors == 1:
+        # fit AR(1) on the matrix
+        fitted_model = sm.tsa.arima.ARIMA(raw_factors, order=(1,0,0)).fit()
 
-        # bs sample a row of the data
-        f_bs_row = random.randint(0,length_factors-1)
-        f_bs_row   = raw_factors[f_bs_row,:].reshape(1, -1)
-
-        # simulate the factor with normal innovations
-        new_factors[t, :] = np.matmul(f_bs_row, fitted_model.coefs)+fitted_model.resid[epi_bs_row,:]
-
-    
+        # simulate new factors ussing fitted AR(1) with normal innovations
+        for s in range(S):
+            new_factors[:,:,s] = fitted_model.simulate(nsimulations=T, random_state=s).reshape(-1,1)
+    else:
+        assert(1==0),('incorrect number of factors for simulation; not 1 or more.')
 
     return new_factors
 
 def DGP(S: int, N: int, T: int, 
-        p: int, l: int, k: int, sparse: int, 
+        p: int, l: int, k: int, sparse_s: int, sparse_design: str,
         rho: float, sigma_eps: float,
         factor_df: pd.DataFrame, covar_df: pd.DataFrame) -> tuple:
     ''' Generate random variables and parameters for simulation.
@@ -193,9 +190,12 @@ def DGP(S: int, N: int, T: int,
         p (int): dimensionality of the covariates.
         l (int): dimensionality of observable factors.
         k (int): dimensionality of latent factors.
-        sparse (int): sparsity index of factor loadings.
+        sparse_s (int): sparsity index of factor loadings.
+        sparse_design (str): exact or approx sparsity design.
         rho (float): cross-sectional correlation of covariates.
         sigma_eps (float): standard deviation of idiosyncratic error.
+        factor_df (pd.DataFrame): time series data of observable and latent factors.
+        covar_df (pd.DataFrame): panel data of asset characteristics.
     
     Returns: 
         (tuple):
@@ -208,52 +208,84 @@ def DGP(S: int, N: int, T: int,
             - Gamma_beta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
             - Gamma_delta (np.ndarray): true loading on latent factors of dim (p+1) by 1.
     '''
+    # Confirm range of arguments
+    assert(sparse_design in ['exact', 'approx']),('Incorrect specification for sparsity.')
+
     # Initialize data objects 
     R = np.zeros((T*N, 1, S), dtype=float)
-    Z = np.zeros((T*N, p+1, S), dtype=float)
     H = np.zeros((T, p+1, S), dtype=float)
-    G = np.zeros((T, l, S), dtype=float)
-    F = np.zeros((T, k, S), dtype=float)
     e = np.zeros((T*N, 1, S), dtype=float)
 
     # Initialize parameters
+    approx_constant = 0.2
     Gamma_beta = np.zeros((p+1, l))
     Gamma_delta = np.zeros((p+1, k))
-    for i in range(sparse):
-        for j in range(l):
-            Gamma_beta[i, j] = 1
-        for j in range(k):
-            Gamma_delta[i, j] = 1
+    if sparse_design == 'exact':
+        for j in range(sparse_s):
+            for i in range(l):
+                Gamma_beta[j, i] = 0.01
+            for i in range(k):
+                Gamma_delta[j, i] = 0.01
+    if sparse_design == 'approx':
+        for j in range(p+1):
+            for i in range(l):
+                Gamma_beta[j, i]  = (approx_constant**(i+1))**(j+1)
+            for i in range(k):
+                Gamma_delta[j, i] = (approx_constant**(i+1))**(j+1)
 
-    # Create Z covariance ndarray
+    # create Z covariance ndarray
     Z_covar = np.zeros((p+1,p+1))
     for i in range(0,p+1):
         for j in range(0,p+1):
             Z_covar[i,j] = rho**(np.abs(i-j))
 
-    # Generate data for each simulation
+    # simulate the factors
+    G = simulateFactors(factor_df[['g_rtm4_t']].values, T, S)
+    F = simulateFactors(factor_df.drop(columns=['date', 'g_rtm4_t']).values, T, S)
+
+    # generate data for each simulation
     for s in range(S):
-        # Set seed for numpy and random packages for replicable data
+        # set seed for numpy and random packages for replicable data
         np.random.seed(s)
 
-        # Form G
-        #G[:, :, s] = simulateFactors(factor_df[['g_rtm4_t']].values, T, s)
+        # form asset covariates
+        Z[:,:,s] = np.random.multivariate_normal(np.zeros(p+1), Z_covar, size=T*N)
 
-        # Form F
-        F[:, :, s] = simulateFactors(factor_df.drop(columns=['date', 'g_rtm4_t']).values, T, s)
-
-        # Form Z
-        Z[:, :, s] = np.random.multivariate_normal(np.zeros(p+1), Z_covar, size=T*N)
-
-        # Form idiosyncratic errors
+        # form idiosyncratic errors
         e[:,:,s] = np.random.multivariate_normal([0], [[sigma_eps**2]], size=T*N)
 
-        # Form H
+        # form H
         H[:,:,s] = np.matmul(G[:,:,s], np.transpose(Gamma_beta)) + \
                     np.matmul(F[:,:,s], np.transpose(Gamma_delta))
 
-        # Form outcome/returns
+        # form outcome/returns
         R[:,:,s] = np.sum(Z[:,:,s]*np.repeat(H[:,:,s], N, axis=0),axis=1).reshape(-1,1) + e[:,:,s]
+
+        # calibrate epsilon such that R^2 is between 10%-30%
+        r_2 = 1-np.var(e[:,:,s])/np.var(R[:,:,s])
+        new_sigma_eps = sigma_eps
+        while (r_2 > 0.3) | (r_2 < 0.1):
+            if r_2 > 0.3: # r^2 is too high so crank up noise
+                new_sigma_eps = 1.1*new_sigma_eps
+            else: # r^2 is too low so crank down noise
+                new_sigma_eps = 0.9*new_sigma_eps
+
+            # reset errors and LHS
+            e[:,:,s] = np.random.multivariate_normal([0], [[new_sigma_eps**2]], size=T*N)
+            R[:,:,s] = (np.sum(Z[:,:,s]*np.repeat(H[:,:,s], N, axis=0),axis=1).reshape(-1,1) 
+                        + e[:,:,s])
+
+            # update R^2
+            r_2 = 1-np.var(e[:,:,s])/np.var(R[:,:,s])
+            print(r_2)
+            print(new_sigma_eps)
+
+    # ensure all returns are min at -1
+    R[R < -1] = -1 
+
+    # report distribution of returns averaged across the simulations
+    print('distribution of returns across simulations: ')
+    print(pd.DataFrame(np.mean(R, axis=2)).describe())
 
     return R, Z, H, G, F, e, Gamma_beta, Gamma_delta
 
@@ -261,7 +293,7 @@ def runLasso(Y: np.ndarray, X: np.ndarray, penalty: float) -> np.ndarray:
     ''' Runs lasso of Y on X with given penalty param to return fitted coefs.
 
     Args: 
-        X (np.ndarray): RHS variables with rows of obs and cols of covars.
+        X (np.ndarray): RHS variables with rows of obs and covar_cols of covars.
                        These data include a constant but have yet to be
                        normalized for lasso.
         Y (np.ndarray): LHS variable with rows of obs and single column.
@@ -288,7 +320,7 @@ def calcPenaltyBCCH(Y: np.ndarray, X: np.ndarray, c: float) -> float:
         closed-form solution for selecting Lasso penalty parmaeter.
 
     Args: 
-        X (np.ndarray): RHS variables with rows of obs and cols of covars.
+        X (np.ndarray): RHS variables with rows of obs and covar_cols of covars.
                        These data include a constant but have yet to be
                        normalized for lasso.
         Y (np.ndarray): LHS variable with rows of obs and single column.
@@ -321,7 +353,7 @@ def runOLS(Y: np.ndarray, X: np.ndarray) -> np.ndarray:
     ''' Runs OLS of Y on X to return fitted coefficients.
 
     Args: 
-        X (np.ndarray): RHS--assumes contains constant--with rows of obs and cols of covars.
+        X (np.ndarray): RHS--assumes contains constant--with rows of obs and covar_cols of covars.
         Y (np.ndarray): LHS variable with rows of obs and single column.
 
     Returns:
@@ -337,7 +369,7 @@ def runDoubleLasso(Y: np.ndarray, D: np.ndarray, X: np.ndarray,
     Args: 
         Y (np.ndarray): LHS variable with rows of obs and single column.
         D (np.ndarray): RHS target variable with rows of obs and single column.
-        X (np.ndarray): RHS controls with rows of obs and cols of covars.
+        X (np.ndarray): RHS controls with rows of obs and covar_cols of covars.
         amel_set (list): column indices of X to manually include in final OLS reg,
                          termed the amelioration set.
         c (float):    scalar constant from theory; usually ~1.
@@ -522,8 +554,8 @@ if __name__ == "__main__":
     num_cpus  = 20
     amel_set  = [1]
     c         = 0.1
-    rho       = 0.1
-    sigma_eps = 1
+    rho       = 0.01
+    sigma_eps = 0.4
 
     S         = 10 # TODO CHANGE BACK TO 200
     N         = 200
@@ -531,7 +563,8 @@ if __name__ == "__main__":
     p         = 20
     l         = 1 
     k         = 3
-    sparse    = 5
+    sparse_s  = 5
+    sparse_design = 'approx' # note: 'exact' or 'approx'
 
     emp_data_fp = '../data/derived/old_panel_use_temp_until_new.pkl'
 
@@ -539,8 +572,8 @@ if __name__ == "__main__":
     covar_df, factor_df = readAndPrepEmpiricalDataSource(emp_data_fp, N)
 
     # build DGP
-    R, Z, H, G, F, e, Gamma_beta, Gamma_delta = DGP(S, N, T, p, l, k, sparse, rho, sigma_eps,
-                                                    factor_df, covar_df)
+    R, Z, H, G, F, e, Gamma_beta, Gamma_delta = DGP(S, N, T, p, l, k, sparse_s, sparse_design,
+                                                    rho, sigma_eps, factor_df, covar_df)
 
     # run simulation
     Gamma_beta_hat_b, = runSimulation(R, Z, G, amel_set, c, num_cpus)
@@ -558,45 +591,14 @@ if __name__ == "__main__":
 
 
 
-
-
-
-# TODO NEED TO UPDATE THIS SIMULATION OF VAR DATA AS I DONT THINK IT IS QUITE RIGHT
-    # -adjust to just simulate episilon using normal random variable with mean and std from residuals
-    # -adjust to use AutoReg(data, lags=1).fit() if it is a univariate time series
-
-
-# TODO: CALL FUNC TO GEN G_T AND F_T FROM THE DGP FUNC
-
-# TODO: WRITE FUNCTION TO SIM INSTRUMENTS FORM ITS DATA
-# $z_{i,t-1}$ simulated from in a similar way from the empirical data using p = 20 
-# Calculate the time series average of each instrument and de-mean them.
-# Estimate a VAR(1) on the entire panel of de-meaned instruments.
-# For each asset, (i) simulate each mean-zero instrument from the VAR(1) model with normal innovations and (ii) generate and add in the mean of each instrument as an BS draw with equal weights from empirical disribution of time series means.
-# Randomly column sort the instruments to ensure no order bias to them given sparsity.
-
-# TODO: CALL FUNC TO SIM INSTRUMENTS FROM THE DGP FUNC
-
-# TODO: ADJUST EPI IN DGP FUNC TO EDIT EPSILON TO CALIBRATE VARIANCE BASED ON R^2
-
-# TODO: ADJUST DGP FUNC FOR SPARSITY to be a switch for dense or approximate.
-
-# TODO: ADJUST DGP FUNC to output 7 stat summary of returns so I can calibrate accordingly to make it look legit
-
-# TODO: Set all options such that I can generate DGP however I want.
-
-# TODO: Generate my results on smallest DGP to see how long it takes; do napkin math on largest; run it overnight to actually time and take a note of it somewhere so I know for future.
-
-#
-import os
-os.chdir('/home/baybutt/Dropbox/2-creations/2-crafts/4-i_research/2-research/2022-jmp/jmp/code')
-os.getcwd()
-
-
-
-
-
 # TODO:
 # -Split out all my estimation code into a separate file (i.e. this file) and then just import those functions into a new file
 # --read any formating on how to do this nicely
 # -Number this file appropriately given the rest of the code
+
+# NOTES ON RUN TIME:
+# T=200, N=200, p=20, l=1, k=3, S=10, num_cpu=20 takes about 90 seconds to run just my estimation procedure (along DGP).
+# So half hour for S=200.
+# so a day for full T and N
+# and a week or more for full p so do able.
+
