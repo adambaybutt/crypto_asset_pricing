@@ -173,11 +173,11 @@ def simulateFactors(raw_factors: np.ndarray, T: int, S: int) -> np.ndarray:
         for s in range(S):
             new_factors[:,:,s] = fitted_model.simulate(nsimulations=T, random_state=s).reshape(-1,1)
     else:
-        assert(1==0),('incorrect number of factors for simulation; not 1 or more.')
+        raise ValueError('incorrect number of factors for simulation; not 1 or more.')
 
     return new_factors
 
-def DGP(S: int, N: int, T: int, 
+def DGP(S: int, T: int, N: int, 
         p: int, l: int, k: int, sparse_s: int, sparse_design: str,
         rho: float, sigma_eps: float,
         factor_df: pd.DataFrame, covar_df: pd.DataFrame) -> tuple:
@@ -185,8 +185,8 @@ def DGP(S: int, N: int, T: int,
 
     Args: 
         S (int): number of simulations.
-        N (int): number of observational units per time period.
         T (int): number of time periods.
+        N (int): number of observational units per time period.
         p (int): dimensionality of the covariates.
         l (int): dimensionality of observable factors.
         k (int): dimensionality of latent factors.
@@ -213,6 +213,7 @@ def DGP(S: int, N: int, T: int,
 
     # Initialize data objects 
     R = np.zeros((T*N, 1, S), dtype=float)
+    Z = np.zeros((T*N, p+1, S), dtype=float)
     H = np.zeros((T, p+1, S), dtype=float)
     e = np.zeros((T*N, 1, S), dtype=float)
 
@@ -458,7 +459,55 @@ def runEstimation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
 
     return np.array(Gamma_beta_hat)
 
+def runIPCA(Y: np.ndarray, X: np.ndarray, G: np.ndarray, T: int, N: int, l: int, k: int):
+    ''' Runs IPCA estimation procedure to return estimated loadings Gamma and factors Factors.
+
+    Args:
+        Y (np.ndarray): single column of returns of dimension N*T by 1.
+        X (np.ndarray): p+1 columns of covariates with N*T rows.
+        G (np.ndarray): matrix of observed factors of dimensions T by l.
+        T (int): number of time periods.
+        N (int): number of observational units per time period.
+        l (int): dimensionality of observable factors.
+        k (int): dimensionality of latent factors.
+
+    Returns: (tuple)
+        Gamma (np.ndarray): loadings of dimensions (p+1) by (l+k).
+        Factors (np.ndarray): factors of dimensions T by (l+k).
+    '''
+    # convert input objects to necessary object type and dimensions
+    Y = pd.DataFrame(Y)
+    X = pd.DataFrame(X)
+    G = np.transpose(G)
+
+    # add multiindex of integers time and asset to both LHS and RHS
+    Y['time']  = np.repeat(np.arange(1,T+1), N)
+    Y['asset'] = np.tile(np.arange(1,N+1), T)
+    X['time']  = np.repeat(np.arange(1,T+1), N)
+    X['asset'] = np.tile(np.arange(1,N+1), T)
+    Y = Y.set_index(keys=['asset', 'time'], verify_integrity=True)
+    Y = Y.squeeze() # convert to Series
+    X = X.set_index(keys=['asset', 'time'], verify_integrity=True)
+
+    # determine if fitting intercept
+    if l>=2:
+        intercept = True
+    else:
+        intercept = False
+
+    # fit IPCA
+    ipca = InstrumentedPCA(n_factors=(k+l), intercept=intercept)
+    ipca = ipca.fit(X=X, y=Y, PSF=G, data_type='panel')
+
+    # obtain parameters
+    Gamma, Factors = ipca.get_factors()
+    Factors = np.transpose(Factors)
+    hypo_pval = ipca.BS_Wdelta(ndraws=200, n_jobs=4)
+    
+    return Gamma, Factors, hypo_pval
+
 def runSimulation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
+                  T: int, N: int, p: int, l: int, k: int, 
                   amel_set: list, c: float, num_cpus: int) -> tuple:
     ''' Runs the simulation to estimate target parameters and return estimates across various
         procedures for all monte carlo repetitions.
@@ -467,6 +516,11 @@ def runSimulation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
         R (np.ndarray):  outcome/returns ndarray of dimensions T*N by 1.
         Z (np.ndarray):  covariates of dimensions T*N by (p+1).
         G (np.ndarray):  true observable factors of dimensions T by l.
+        T (int): number of time periods.
+        N (int): number of observational units per time period.
+        p (int): dimensionality of the covariates.
+        l (int): dimensionality of observable factors.
+        k (int): dimensionality of latent factors.
         amel_set (list): column indices of X to manually include in final OLS reg,
                          termed the amelioration set.
         c (float):       scalar constant from theory; usually ~1.
@@ -474,19 +528,30 @@ def runSimulation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
     
     Returns: 
         (tuple):
-            - Gamma_beta_hat_b (np.ndarray): estimated gamma beta for my proc of dim (p+1) by S.
-            - Gamma_beta_hat_ipca (np.ndarray): estimated gamma beta for ipca of dim (p+1) by S.
+            - Gamma_beta_hat_b (np.ndarray): est gamma beta for my proc of dim (p+1) by l by S.
+            - Gamma_beta_hat_ipca (np.ndarray): est gamma beta for ipca of dim (p+1) by l by S.
     '''
-    def runForEachMCrep(s):
+    # define functions to run in parallel to estimate parameters
+    def runEstForEachMCrep(s):
         return runEstimation(R[:,:,s], Z[:,:,s], G[:,:,s], amel_set, c)
+
+    def runIPCAForEachMCrep(s):
+        return runIPCA(R[:,:,s], Z[:,:,s], G[:,:,s], T, N, l, k)
     
     # estimate \Gamma_\beta for each Monte Carlo repetition and clean up shape
-    # note: runEstimation will split each call across four cpus hince divide num_cpus by 4
-    Gamma_beta_hat_b = Parallel(n_jobs=int(num_cpus/4))(delayed(runForEachMCrep)(s) 
+    # notes: 
+    # -runEstimation will split each call across four cpus hince divide num_cpus by 4
+    # -run Double Lasso estimation then IPCA
+    # -IPCA splits join across four cpus as well 
+    Gamma_beta_hat_b = Parallel(n_jobs=int(num_cpus/4))(delayed(runEstForEachMCrep)(s) 
                                                                 for s in range(S))
-    Gamma_beta_hat_b = np.transpose(np.array(Gamma_beta_hat_b)[:,:,0])
+    Gamma_beta_hat_b = np.transpose(np.array(Gamma_beta_hat_b)[:,:,0]).reshape(p+1, l, S)
+    Params_hat_ipca  = Parallel(n_jobs=int(num_cpus/4))(delayed(runIPCAForEachMCrep)(s) for s in range(S))
+    Gamma_hat_ipca   = np.transpose(np.asarray([np.transpose(est[0]) for est in Params_hat_ipca]))
+    Factors_hat_ipca = np.transpose(np.asarray([np.transpose(est[1]) for est in Params_hat_ipca]))
+    Hypo_tests_ipca  = np.transpose(np.asarray([np.transpose(est[2]) for est in Params_hat_ipca]))
 
-    return (Gamma_beta_hat_b, )
+    return Gamma_beta_hat_b, Gamma_hat_ipca[:,k:,:], Hypo_tests_ipca
 
 def calcMSE(est: np.ndarray, param: np.ndarray) -> float:
     ''' Calculate the mse between an estimator and parameter.
@@ -525,13 +590,16 @@ def calcVar(est: np.ndarray, param: np.ndarray) -> float:
     return np.square(est - np.mean(est, axis=1).reshape(-1,1))
 
 def calcEstimationErrors(Gamma_beta: np.ndarray, 
-                         Gamma_beta_hat_b: np.ndarray) -> tuple:
+                         Gamma_beta_hat: np.ndarray, 
+                         S: int, p: int, l: int) -> tuple:
     ''' Calculate estimation errors for procedures across simulations.
     
     Args:
         Gamma_beta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
-        Gamma_beta_hat_b (np.ndarray): estimated gamma beta for my proc of dim (p+1) by S.
-        Gamma_beta_hat_ipca (np.ndarray): estimated gamma beta for ipca of dim (p+1) by S.
+        Gamma_beta_hat (np.ndarray): estimated gamma beta of dim (p+1) by l by S.
+        S (int): number of simulations.
+        p (int): dimensionality of the covariates.
+        l (int): dimensionality of observable factors.
 
     Returns:
         (tuple):
@@ -542,12 +610,18 @@ def calcEstimationErrors(Gamma_beta: np.ndarray,
             - bias2_ipca (float): estimated bias^2 of ipca across simulations.
             - var_ipca (float):  estimated variance of ipca across simulations.
     '''
-    # calculate estimation errors of my procedure
-    mse_b   = np.mean(calcMSE(Gamma_beta_hat_b, Gamma_beta))
-    bias2_b = np.mean(calcBias2(Gamma_beta_hat_b, Gamma_beta))
-    var_b   = np.mean(calcVar(Gamma_beta_hat_b, Gamma_beta))
+    # adjust dimensions
+    if l==1:
+        Gamma_beta_hat = Gamma_beta_hat.reshape((p+1),S)
+    else:
+        raise ValueError('need to update this code for l>1')
 
-    return (mse_b, bias2_b, var_b, )
+    # calculate estimation errors of my procedure
+    mse_b   = np.mean(calcMSE(Gamma_beta_hat, Gamma_beta))
+    bias2_b = np.mean(calcBias2(Gamma_beta_hat, Gamma_beta))
+    var_b   = np.mean(calcVar(Gamma_beta_hat, Gamma_beta))
+
+    return mse_b, bias2_b, var_b
 
 if __name__ == "__main__":
     # set simulation parameters
@@ -558,13 +632,13 @@ if __name__ == "__main__":
     sigma_eps = 0.4
 
     S         = 10 # TODO CHANGE BACK TO 200
-    N         = 200
     T         = 200
+    N         = 200
     p         = 20
     l         = 1 
     k         = 3
     sparse_s  = 5
-    sparse_design = 'approx' # note: 'exact' or 'approx'
+    sparse_design = 'exact' # note: 'exact' or 'approx'
 
     emp_data_fp = '../data/derived/old_panel_use_temp_until_new.pkl'
 
@@ -572,14 +646,16 @@ if __name__ == "__main__":
     covar_df, factor_df = readAndPrepEmpiricalDataSource(emp_data_fp, N)
 
     # build DGP
-    R, Z, H, G, F, e, Gamma_beta, Gamma_delta = DGP(S, N, T, p, l, k, sparse_s, sparse_design,
+    R, Z, H, G, F, e, Gamma_beta, Gamma_delta = DGP(S, T, N, p, l, k, sparse_s, sparse_design,
                                                     rho, sigma_eps, factor_df, covar_df)
 
     # run simulation
-    Gamma_beta_hat_b, = runSimulation(R, Z, G, amel_set, c, num_cpus)
+    Gamma_beta_hat_b, Gamma_beta_hat_ipca, Hypo_tests_ipca = runSimulation(R, Z, G, T, N, p, l, k, 
+                                                                amel_set, c, num_cpus)
 
     # calc estimation errors
-    mse_b, bias2_b, var_b, = calcEstimationErrors(Gamma_beta, Gamma_beta_hat_b)
+    mse_b, bias2_b, var_b = calcEstimationErrors(Gamma_beta, Gamma_beta_hat_b, S, p, l)
+    mse_ipca, bias2_ipca, var_ipca = calcEstimationErrors(Gamma_beta, Gamma_beta_hat_ipca, S, p, l)
 
     # report
     print('estimation errors for my procedure:')
@@ -587,9 +663,32 @@ if __name__ == "__main__":
     print(f'var: {var_b}')
     print(f'mse: {mse_b}')
     print('estimation errors for ipca:')
+    print(f'bias2: {bias2_ipca}')
+    print(f'var: {var_ipca}')
+    print(f'mse: {mse_ipca}')
 
+    # save results
+    results_df = pd.DataFrame(data = {'S': [S, S],
+                                      'T': [T, T],
+                                      'N': [N, N],
+                                      'p': [p, p],
+                                      'l': [l, l],
+                                      'k': [k, k],
+                                      'sparse_s': [sparse_s, sparse_s],
+                                      'sparse_design': [sparse_design, sparse_design],
+                                      'c': [c, c],
+                                      'rho': [rho, rho],
+                                      'sigma_eps': [sigma_eps, sigma_eps],
+                                      'method': ['baybutt', 'ipca'],
+                                      'bias2': [bias2_b, bias2_ipca],
+                                      'var':   [var_b, var_ipca],
+                                      'mse':   [mse_b, mse_ipca]})
+    results_df.to_csv('../output/high_dim_fm/sim.csv') # TODO change to read in, append, and resave to hidden raw sheet of excel file
+    
 
-
+# TODO REMOVE
+import os
+os.chdir('/home/baybutt/Dropbox/2-creations/2-crafts/4-i_research/2-research/2022-jmp/jmp/code')
 
 # TODO:
 # -Split out all my estimation code into a separate file (i.e. this file) and then just import those functions into a new file
