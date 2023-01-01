@@ -687,8 +687,8 @@ if __name__ == "__main__":
     
 
 # TODO REMOVE
-import os
-os.chdir('/home/baybutt/Dropbox/2-creations/2-crafts/4-i_research/2-research/2022-jmp/jmp/code')
+# import os
+# os.chdir('/home/baybutt/Dropbox/2-creations/2-crafts/4-i_research/2-research/2022-jmp/jmp/code')
 
 # TODO:
 # -Split out all my estimation code into a separate file (i.e. this file) and then just import those functions into a new file
