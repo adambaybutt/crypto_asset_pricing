@@ -6,6 +6,32 @@ from joblib import Parallel, delayed
 import statsmodels.api as sm
 from ipca import InstrumentedPCA
 
+def genAR1Process(mu: float, phi: float, sigma: float, T: int) -> np.ndarray:
+    """
+    Generates an AR(1) process for a given set of parameters and length T using numpy.
+    
+    Args:
+        mu (float): the mean of the AR(1) process.
+        phi (float): the autoregression parameter which should be between -1 and 1.
+        sigma (float): the standard deviation of the white noise used in the AR(1) process.
+        T (int): The length of the AR(1) process to generate.
+    
+    Returns:
+        x (np.array): A numpy array of length T containing the generated AR(1) process.
+    """
+    # Generate white noise with mean 0 and standard deviation sigma
+    epsilon = np.random.normal(0, sigma, T)
+
+    # Initialize the first value of the AR(1) process
+    x = np.zeros(T)
+    x[0] = mu + epsilon[0]
+    
+    # Generate the rest of the values using the AR(1) process equation
+    for t in range(1, T):
+        x[t] = mu + phi * x[t-1] + epsilon[t]
+    
+    return x
+
 def readAndPrepEmpiricalDataSource(fp: str, N: int):
     ''' Read in the empirical data that will be used for the DGP.
 
@@ -178,9 +204,11 @@ def simulateFactors(raw_factors: np.ndarray, T: int, S: int) -> np.ndarray:
     return new_factors
 
 def DGP(S: int, T: int, N: int, 
-        p: int, l: int, k: int, sparse_s: int, sparse_design: str,
-        rho: float, sigma_eps: float,
-        factor_df: pd.DataFrame, covar_df: pd.DataFrame) -> tuple:
+        p: int, l: int, k: int, 
+        rho: float, rho_f: float, rho_g: float, sigma_eps: float,
+        factor_df: pd.DataFrame=None, covar_df: pd.DataFrame=None,
+        sparse_s: int=5, sparse_design: str='exact',
+        alpha: bool=False, ob_factor: bool=False, dgp: str='synthetic') -> tuple:
     ''' Generate random variables and parameters for simulation.
 
     Args: 
@@ -190,12 +218,17 @@ def DGP(S: int, T: int, N: int,
         p (int): dimensionality of the covariates.
         l (int): dimensionality of observable factors.
         k (int): dimensionality of latent factors.
-        sparse_s (int): sparsity index of factor loadings.
-        sparse_design (str): exact or approx sparsity design.
         rho (float): cross-sectional correlation of covariates.
+        rho_f (float): latent factor variance.
+        rho_g (float): observable factor variance.
         sigma_eps (float): standard deviation of idiosyncratic error.
         factor_df (pd.DataFrame): time series data of observable and latent factors.
         covar_df (pd.DataFrame): panel data of asset characteristics.
+        sparse_s (int): sparsity index of factor loadings.
+        sparse_design (str): exact or approx sparsity design.
+        alpha (bool): switch on whether to generate alpha or not in the model for returns.
+        ob_factor (bool): switch on whether to generate observable factor(s) or not.
+        dgp (str): switch on whether to use `synthetic` dgp or `empirical` dgp.
     
     Returns: 
         (tuple):
@@ -205,63 +238,100 @@ def DGP(S: int, T: int, N: int,
             - G (np.ndarray): true observable factors of dimensions T, l, S.
             - F (np.ndarray): true latent factors of dimensions T, k, S.
             - e (np.ndarray): true idiosyncratic error of dimensions T*N, 1, S.
-            - Gamma_beta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
-            - Gamma_delta (np.ndarray): true loading on latent factors of dim (p+1) by 1.
+            - Gamma_delta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
+            - Gamma_beta (np.ndarray): true loading on latent factors of dim (p+1) by 1.
     '''
     # Confirm range of arguments
     assert(sparse_design in ['exact', 'approx']),('Incorrect specification for sparsity.')
+    assert(dgp in ['empirical', 'synthetic']),(
+        'dgp switch has to be set to either synthetic or empirical.')
 
     # Initialize data objects 
     R = np.zeros((T*N, 1, S), dtype=float)
-    Z = np.zeros((T*N, p+1, S), dtype=float)
     H = np.zeros((T, p+1, S), dtype=float)
     e = np.zeros((T*N, 1, S), dtype=float)
 
     # Initialize parameters
-    approx_constant = 0.2
-    Gamma_beta = np.zeros((p+1, l))
-    Gamma_delta = np.zeros((p+1, k))
+    approx_constant = 0.15
+    Gamma_alpha = np.zeros((p+1, 1))
+    Gamma_delta = np.zeros((p+1, l))
+    Gamma_beta  = np.zeros((p+1, k))
     if sparse_design == 'exact':
         for j in range(sparse_s):
-            for i in range(l):
-                Gamma_beta[j, i] = 0.01
+            if alpha == True:
+                Gamma_alpha[j, :] = 0.01
+            else:
+                Gamma_alpha = None
             for i in range(k):
-                Gamma_delta[j, i] = 0.01
+                Gamma_beta[j, i] = 0.01
+            if ob_factor == True:
+                for i in range(l):
+                    Gamma_delta[j, i] = 0.01
     if sparse_design == 'approx':
         for j in range(p+1):
-            for i in range(l):
-                Gamma_beta[j, i]  = (approx_constant**(i+1))**(j+1)
+            if alpha == True:
+                Gamma_alpha[j, :] = (approx_constant)**(j+1)
+            else:
+                Gamma_alpha = None
             for i in range(k):
-                Gamma_delta[j, i] = (approx_constant**(i+1))**(j+1)
+                Gamma_beta[j, i] = (approx_constant**(i+1))**(j+1)
+            if ob_factor == True:
+                for i in range(l):
+                    Gamma_delta[j, i]  = (approx_constant**(i+1))**(j+1)
 
-    # create Z covariance ndarray
-    Z_covar = np.zeros((p+1,p+1))
-    for i in range(0,p+1):
-        for j in range(0,p+1):
-            Z_covar[i,j] = rho**(np.abs(i-j))
+    # ensure ob factors and gamma delta are set to something even if we have no observable factor
+    if ob_factor == False:
+        Gamma_delta = None
+        G = None
 
-    # simulate the factors
-    G = simulateFactors(factor_df[['g_rtm4_t']].values, T, S)
-    F = simulateFactors(factor_df.drop(columns=['date', 'g_rtm4_t']).values, T, S)
+    # simulate covariates and factors
+    if dgp == 'empirical':
+        Z = np.zeros((T*N, p+1, S), dtype=float) # TO FIX
+        F = simulateFactors(factor_df.drop(columns=['date', 'g_rtm4_t']).values, T, S)
+        if ob_factor == True:
+            G = simulateFactors(factor_df[['g_rtm4_t']].values, T, S)
+    elif dgp == 'synthetic':
+        Z = np.zeros((T*N, p+1, S), dtype=float)
+        F = np.zeros((T, k, S), dtype=float)
+        F_covar = rho_f*np.identity(k)
+        if ob_factor == True:
+            G = np.zeros((T, l, S), dtype=float)
+            G_covar = rho_g*np.identity(l)
 
     # generate data for each simulation
     for s in range(S):
         # set seed for numpy and random packages for replicable data
         np.random.seed(s)
 
-        # form asset covariates
-        Z[:,:,s] = np.random.multivariate_normal(np.zeros(p+1), Z_covar, size=T*N)
+        # simulate data using synthetic dgp
+        if dgp == 'synthetic':
+            # simulation asset covariates
+            for j in range(p+1):
+                Z[:,j,s] = genAR1Process(mu=0.005, phi=0.9, sigma=rho, T=T*N)
+
+            # simulation factors
+            F[:,:,s] = np.random.multivariate_normal(0.06+np.zeros(k), F_covar, size=T)
+            if ob_factor == True:
+                G[:,:,s] = np.random.multivariate_normal(0.06+np.zeros(l), G_covar, size=T)
+
+        if dgp == 'empirical': # TODO GET RID OF THIS WHO IF STATEMENT ONCE I CODE UP EMP COVARs
+            # simulation asset covariates
+            for j in range(p+1):
+                Z[:,j,s] = genAR1Process(mu=0.005, phi=0.9, sigma=rho, T=T*N)
 
         # form idiosyncratic errors
         e[:,:,s] = np.random.multivariate_normal([0], [[sigma_eps**2]], size=T*N)
 
         # form H
-        H[:,:,s] = np.matmul(G[:,:,s], np.transpose(Gamma_beta)) + \
-                    np.matmul(F[:,:,s], np.transpose(Gamma_delta))
+        H[:,:,s] = np.matmul(F[:,:,s], np.transpose(Gamma_beta))
+        if alpha == True:
+            H[:,:,s] += np.transpose(Gamma_alpha)
+        if ob_factor == True:
+            H[:,:,s] += np.matmul(G[:,:,s], np.transpose(Gamma_delta))
 
         # form outcome/returns
         R[:,:,s] = np.sum(Z[:,:,s]*np.repeat(H[:,:,s], N, axis=0),axis=1).reshape(-1,1) + e[:,:,s]
-
+        
         # calibrate epsilon such that R^2 is between 10%-30%
         r_2 = 1-np.var(e[:,:,s])/np.var(R[:,:,s])
         new_sigma_eps = sigma_eps
@@ -288,7 +358,7 @@ def DGP(S: int, T: int, N: int,
     print('distribution of returns across simulations: ')
     print(pd.DataFrame(np.mean(R, axis=2)).describe())
 
-    return R, Z, H, G, F, e, Gamma_beta, Gamma_delta
+    return R, Z, H, G, F, e, Gamma_alpha, Gamma_delta, Gamma_beta
 
 def runLasso(Y: np.ndarray, X: np.ndarray, penalty: float) -> np.ndarray:
     ''' Runs lasso of Y on X with given penalty param to return fitted coefs.
@@ -302,7 +372,7 @@ def runLasso(Y: np.ndarray, X: np.ndarray, penalty: float) -> np.ndarray:
 
     Returns:
         beta_hat (np.ndarray): vector of fitted coefficients; note: these
-                             must be used on normalized RHS variables.
+                               must be used on normalized RHS variables.
     '''
     # normalize RHS
     muhat  = np.mean(X, axis = 0)
@@ -417,7 +487,7 @@ def runEstimation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
         c (float):       scalar constant from theory; usually ~1.
 
     Returns:
-        Gamma_beta_hat (np.ndarray): estimated loading on observable factors of dim (p+1) by 1.
+        Gamma_delta_hat (np.ndarray): estimated loading on observable factors of dim (p+1) by 1.
     '''
     # initialize objects
     T = G.shape[0]
@@ -454,10 +524,10 @@ def runEstimation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
         # estimate 
         return runOLS(H_hat[:,j], G)
 
-    # estimate \Gamma_{\beta,j} using all time periods for all j
-    Gamma_beta_hat = Parallel(n_jobs=2)(delayed(runForEachCovariate)(j) for j in range(p+1))
+    # estimate \Gamma_{\delta,j} using all time periods for all j
+    Gamma_delta_hat = Parallel(n_jobs=2)(delayed(runForEachCovariate)(j) for j in range(p+1))
 
-    return np.array(Gamma_beta_hat)
+    return np.array(Gamma_delta_hat)
 
 def runIPCA(Y: np.ndarray, X: np.ndarray, G: np.ndarray, T: int, N: int, l: int, k: int):
     ''' Runs IPCA estimation procedure to return estimated loadings Gamma and factors Factors.
@@ -528,8 +598,8 @@ def runSimulation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
     
     Returns: 
         (tuple):
-            - Gamma_beta_hat_b (np.ndarray): est gamma beta for my proc of dim (p+1) by l by S.
-            - Gamma_beta_hat_ipca (np.ndarray): est gamma beta for ipca of dim (p+1) by l by S.
+            - Gamma_delta_hat_b (np.ndarray): est gamma delta for my proc of dim (p+1) by l by S.
+            - Gamma_delta_hat_ipca (np.ndarray): est gamma delta for ipca of dim (p+1) by l by S.
     '''
     # define functions to run in parallel to estimate parameters
     def runEstForEachMCrep(s):
@@ -538,20 +608,20 @@ def runSimulation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
     def runIPCAForEachMCrep(s):
         return runIPCA(R[:,:,s], Z[:,:,s], G[:,:,s], T, N, l, k)
     
-    # estimate \Gamma_\beta for each Monte Carlo repetition and clean up shape
+    # estimate \Gamma_\delta for each Monte Carlo repetition and clean up shape
     # notes: 
     # -runEstimation will split each call across four cpus hince divide num_cpus by 4
     # -run Double Lasso estimation then IPCA
     # -IPCA splits join across four cpus as well 
-    Gamma_beta_hat_b = Parallel(n_jobs=int(num_cpus/4))(delayed(runEstForEachMCrep)(s) 
+    Gamma_delta_hat_b = Parallel(n_jobs=int(num_cpus/4))(delayed(runEstForEachMCrep)(s) 
                                                                 for s in range(S))
-    Gamma_beta_hat_b = np.transpose(np.array(Gamma_beta_hat_b)[:,:,0]).reshape(p+1, l, S)
+    Gamma_delta_hat_b = np.transpose(np.array(Gamma_delta_hat_b)[:,:,0]).reshape(p+1, l, S)
     Params_hat_ipca  = Parallel(n_jobs=int(num_cpus/4))(delayed(runIPCAForEachMCrep)(s) for s in range(S))
     Gamma_hat_ipca   = np.transpose(np.asarray([np.transpose(est[0]) for est in Params_hat_ipca]))
     Factors_hat_ipca = np.transpose(np.asarray([np.transpose(est[1]) for est in Params_hat_ipca]))
     Hypo_tests_ipca  = np.transpose(np.asarray([np.transpose(est[2]) for est in Params_hat_ipca]))
 
-    return Gamma_beta_hat_b, Gamma_hat_ipca[:,k:,:], Hypo_tests_ipca
+    return Gamma_delta_hat_b, Gamma_hat_ipca[:,k:,:], Hypo_tests_ipca
 
 def calcMSE(est: np.ndarray, param: np.ndarray) -> float:
     ''' Calculate the mse between an estimator and parameter.
@@ -589,14 +659,14 @@ def calcVar(est: np.ndarray, param: np.ndarray) -> float:
     '''
     return np.square(est - np.mean(est, axis=1).reshape(-1,1))
 
-def calcEstimationErrors(Gamma_beta: np.ndarray, 
-                         Gamma_beta_hat: np.ndarray, 
+def calcEstimationErrors(Gamma_delta: np.ndarray, 
+                         Gamma_delta_hat: np.ndarray, 
                          S: int, p: int, l: int) -> tuple:
     ''' Calculate estimation errors for procedures across simulations.
     
     Args:
-        Gamma_beta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
-        Gamma_beta_hat (np.ndarray): estimated gamma beta of dim (p+1) by l by S.
+        Gamma_delta (np.ndarray): true loading on observable factors of dim (p+1) by 1.
+        Gamma_delta_hat (np.ndarray): estimated gamma delta of dim (p+1) by l by S.
         S (int): number of simulations.
         p (int): dimensionality of the covariates.
         l (int): dimensionality of observable factors.
@@ -612,52 +682,61 @@ def calcEstimationErrors(Gamma_beta: np.ndarray,
     '''
     # adjust dimensions
     if l==1:
-        Gamma_beta_hat = Gamma_beta_hat.reshape((p+1),S)
+        Gamma_delta_hat = Gamma_delta_hat.reshape((p+1),S)
     else:
         raise ValueError('need to update this code for l>1')
 
     # calculate estimation errors of my procedure
-    mse_b   = np.mean(calcMSE(Gamma_beta_hat, Gamma_beta))
-    bias2_b = np.mean(calcBias2(Gamma_beta_hat, Gamma_beta))
-    var_b   = np.mean(calcVar(Gamma_beta_hat, Gamma_beta))
+    mse_b   = np.mean(calcMSE(Gamma_delta_hat, Gamma_delta))
+    bias2_b = np.mean(calcBias2(Gamma_delta_hat, Gamma_delta))
+    var_b   = np.mean(calcVar(Gamma_delta_hat, Gamma_delta))
 
     return mse_b, bias2_b, var_b
 
 if __name__ == "__main__":
     # set simulation parameters
-    num_cpus  = 20
+    num_cpus  = 4 # TODO BACK TO 20
     amel_set  = [1]
     c         = 0.1
-    rho       = 0.01
+    rho       = 0.05
+    rho_f     = 0.05
+    rho_g     = 0.05
     sigma_eps = 0.4
-
     S         = 10 # TODO CHANGE BACK TO 200
-    T         = 200
+    T         = 400
     N         = 200
-    p         = 20
+    p         = 20 # TODO CHANGE TO 100
     l         = 1 
     k         = 3
-    sparse_s  = 5
-    sparse_design = 'exact' # note: 'exact' or 'approx'
-
     emp_data_fp = '../data/derived/old_panel_use_temp_until_new.pkl'
+    alpha = True
+    ob_factor = True
+    dgp = 'synthetic' # note: 'synthetic' or 'empirical'
+    sparse_design = 'exact' # note: 'exact' or 'approx'
+    sparse_s  = 5 # TODO 10
 
     # obtain the empirical data needed for DGP simulations
     covar_df, factor_df = readAndPrepEmpiricalDataSource(emp_data_fp, N)
 
-    # build DGP
-    R, Z, H, G, F, e, Gamma_beta, Gamma_delta = DGP(S, T, N, p, l, k, sparse_s, sparse_design,
-                                                    rho, sigma_eps, factor_df, covar_df)
+    # build DGP using either empirical or synthetic method
+    R, Z, H, G, F, e, Gamma_alpha, Gamma_delta, Gamma_beta = DGP(S, T, N, p, l, k, 
+        rho, rho_f, rho_g, sigma_eps, 
+        factor_df, covar_df,
+        sparse_s, sparse_design,
+        alpha, ob_factor, dgp)
 
     # run simulation
-    Gamma_beta_hat_b, Gamma_beta_hat_ipca, Hypo_tests_ipca = runSimulation(R, Z, G, T, N, p, l, k, 
+    Gamma_delta_hat_b, Gamma_delta_hat_ipca, Hypo_tests_ipca = runSimulation(R, Z, G, T, N, p, l, k, 
                                                                 amel_set, c, num_cpus)
+    # TODO pass all relevant switches; return estimation of all parameters or just None objects but always receive everything
 
-    # calc estimation errors
-    mse_b, bias2_b, var_b = calcEstimationErrors(Gamma_beta, Gamma_beta_hat_b, S, p, l)
-    mse_ipca, bias2_ipca, var_ipca = calcEstimationErrors(Gamma_beta, Gamma_beta_hat_ipca, S, p, l)
-
-    # report
+    # calc estimation errors and report
+    mse_b, bias2_b, var_b = calcEstimationErrors(Gamma_delta, Gamma_delta_hat_b, S, p, l)
+    mse_ipca, bias2_ipca, var_ipca = calcEstimationErrors(Gamma_delta, Gamma_delta_hat_ipca, S, p, l)
+    # TODO calc estimation errors depending on what switches are in play
+    # TODO calc coverage depending on what switches are in play
+    # TODO set ones that i dont calc to just None
+    # TODO integrate printing out the results within these switches
     print('estimation errors for my procedure:')
     print(f'bias2: {bias2_b}')
     print(f'var: {var_b}')
@@ -668,6 +747,9 @@ if __name__ == "__main__":
     print(f'mse: {mse_ipca}')
 
     # save results
+    # TODO save all results whether some of those objects are nOne or not
+    # TODO add date and time of run to save
+    # TODO add other hp to save
     results_df = pd.DataFrame(data = {'S': [S, S],
                                       'T': [T, T],
                                       'N': [N, N],
@@ -700,4 +782,3 @@ if __name__ == "__main__":
 # So half hour for S=200.
 # so a day for full T and N
 # and a week or more for full p so do able.
-
