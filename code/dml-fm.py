@@ -522,10 +522,16 @@ def runEstimation(R: np.ndarray, Z: np.ndarray, G: np.ndarray,
         H_hat[:,j] = np.array(H_t_hat)
 
         # estimate 
+        # TODO RETURN H 
         return runOLS(H_hat[:,j], G)
 
     # estimate \Gamma_{\delta,j} using all time periods for all j
     Gamma_delta_hat = Parallel(n_jobs=2)(delayed(runForEachCovariate)(j) for j in range(p+1))
+    # TODO DO THE OLSs if asked for both gamma alpha and gamma beta together pending what asked
+    # TODO DO THE PCA
+    # TODO DO BOTH IN PARALEL
+    # TODO SET GAMMA DELTA HAT TO NONE IF NOT ASKED
+    # TODO RETURN GAMMA ALPHA, GAMMA BETA, GAMMA DELTA
 
     return np.array(Gamma_delta_hat)
 
