@@ -1,4 +1,3 @@
-# import packages
 import pandas as pd
 import numpy as np
 
@@ -23,6 +22,10 @@ def cleanAssetMetadata(cw_df: pd.DataFrame, column_map: dict, dropna: bool = Tru
 
     # subset to useful columns
     cw_df = cw_df[['cmc_id', 'slug_cmc', 'symbol_cmc', 'first_date_cmc', 'last_date_cmc']]
+
+    # convert date columns to date type
+    cw_df['first_date_cmc'] = pd.to_datetime(cw_df.first_date_cmc, format='%Y-%m-%d', utc=False)
+    cw_df['last_date_cmc'] = pd.to_datetime(cw_df.last_date_cmc, format='%Y-%m-%d', utc=False)
 
     # drop rows with missing values in key columns
     if dropna:
