@@ -34,12 +34,19 @@ class Helper:
                 response = requests.get(url, headers=headers, params=params, timeout=5)
                 response.raise_for_status()
                 return response.json()
-            except requests.exceptions.RequestException as e:
-                logger.warning(f'The API call failed with error: {str(e)}')
-                if attempt == retries - 1:
-                    logger.error(f'The API call failed after {retries} attempts.')
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 403:
+                    logger.warning(f'The API call failed with error: {str(e)}')
+                    logger.warning('403 Forbidden Error - Will not retry')
                     return None
                 else:
-                    sleep_time = (4 ** attempt) * (0.5 + random.uniform(0, 1))
-                    logger.warning(f'Retrying after {sleep_time:.2f} seconds.')
-                    time.sleep(sleep_time)
+                    logger.warning(f'The API call failed with error: {str(e)}')
+            except requests.exceptions.RequestException as e:
+                logger.warning(f'The API call failed with error: {str(e)}')
+            if attempt == retries - 1:
+                logger.error(f'The API call failed after {retries} attempts.')
+                return None
+            else:
+                sleep_time = (4 ** attempt) * (0.5 + random.uniform(0, 1))
+                logger.warning(f'Retrying after {sleep_time:.2f} seconds.')
+                time.sleep(sleep_time)
