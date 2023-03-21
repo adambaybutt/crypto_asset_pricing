@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 from typing import Any, Dict, Optional, List
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 from itertools import chain
@@ -67,7 +67,7 @@ class Helper:
 
         Returns:
         - List[str]: a list of dates in the format '%Y-%m-%d' representing the first day of each year 
-        between the given start and end dates (inclusive).
+                     between the given start and end dates (inclusive).
         """
         # Convert start and end dates to datetime objects
         start_date = datetime.strptime(time_start, '%Y-%m-%d')
@@ -86,6 +86,26 @@ class Helper:
             dates.append(time_end)
 
         return dates
+    
+    @staticmethod
+    def generateDailyDateList(start_time: str, end_time: str) -> List[str]:
+        """ Generates a list of all days between the given start and end dates, inclusive.
+
+        Args:
+        - time_start (str): start date in the format '%Y-%m-%d'.
+        - time_end (str): end date in the format '%Y-%m-%d'.
+
+        Returns: 
+        - List[str]: a list of dates in the format '%Y-%m-%d' representing all days including
+                    and in between the given two dates.
+        """
+        date_list = []
+        current_date = datetime.strptime(start_time, '%Y-%m-%d')
+        end_date = datetime.strptime(end_time, '%Y-%m-%d')
+        while current_date <= end_date:
+            date_list.append(current_date.strftime('%Y-%m-%d'))
+            current_date += timedelta(days=1)
+        return date_list
 
     @staticmethod
     def findUniqueAssets(asset_universe_dict: Dict[str, List[str]]) -> List[str]:
@@ -524,6 +544,7 @@ class Coinmetrics:
         # return asset info relevant columns and clean up index
         return df[['asset', 'full_name', 'exchanges', 'markets', 'metrics']].reset_index(drop=True)
     
+    @staticmethod
     def pullExchangeInfo(base_url: str, base_params: dict, target_exchanges: List[str]) -> pd.DataFrame:
         """
         Returns a DataFrame containing information about cryptocurrency exchanges.
@@ -872,7 +893,10 @@ class Coinmetrics:
                 params['start_time'] = start_time
                 params['end_time'] = end_time
                 response_json = Helper.makeApiCall(url, headers={}, params=params)
-                result_df = pd.DataFrame(response_json['data'])
+                if response_json is not None:
+                    result_df = pd.DataFrame(response_json['data'])
+                else:
+                    continue
             elif target_freq == '1h':
                 result_df = pd.DataFrame()
                 time_list = Helper.generateYearlyCalendarYearDateList(start_time, end_time)
@@ -880,8 +904,11 @@ class Coinmetrics:
                     params['start_time'] = time_list[j]
                     params['end_time'] = time_list[j+1]
                     response_json = Helper.makeApiCall(url, headers={}, params=params)
-                    temp_df = pd.DataFrame(response_json['data'])
-                    result_df = pd.concat((result_df, temp_df))
+                    if response_json is not None:
+                        temp_df = pd.DataFrame(response_json['data'])
+                        result_df = pd.concat((result_df, temp_df))
+                    else:
+                        continue
 
             # clean up the results and append
             try:
@@ -895,19 +922,26 @@ class Coinmetrics:
         return df
     
     @staticmethod
-    def cleanOHLCV(df: pd.DataFrame, target_freq: str, markets_df: pd.DataFrame, usd_df: pd.DataFrame) -> pd.DataFrame:
+    def cleanMarketPanels(df: pd.DataFrame, target_freq: str, 
+                          markets_df: pd.DataFrame, usd_df: pd.DataFrame, ba_df: pd.DataFrame=None) -> pd.DataFrame:
         """ clean the panel data for markets, closing price, usd volume, and trade counts.
 
         Args:
             df (pd.DataFrame): DataFrame containing columns for market, time, price_close, 
-                            candle_usd_volume, and candle_trades_count.
+                               candle_usd_volume, and candle_trades_count.
             target_freq (str): a string for the target frequency for this study.
             markets_df (pd.DataFrame): A pandas DataFrame containing information about relevant markets.
             usd_df (pd.DataFrame): prices for USDC and USDT to calculate exchange rates.
+            ba_df (pd.DataFrame): DataFrame containing columns for time, market, ask_price, ask_size, bid_price, bid_size.
 
         Returns:
             df (pd.DataFrame): a panel dataframe with columns for date, asset, usd_per_token, usd_volume, and trade count.
         """
+        # Set indicator if ba_df was passed in
+        bid_ask_data = False
+        if ba_df is not None:
+            bid_ask_data = True
+        
         # Confirm no missing obs
         assert 0==df.isnull().sum().sum()
 
@@ -923,6 +957,8 @@ class Coinmetrics:
 
         # Add market meta data for exchange, base asset, and quote asset
         df = df.merge(markets_df[['market', 'base', 'quote']], on='market', how='inner', validate='many_to_one')
+        if bid_ask_data:
+            ba_df = ba_df.merge(markets_df[['market', 'base', 'quote']], on='market', how='inner', validate='many_to_one')
 
         # Merge on USDT and USDC prices
         min_usdt_date = np.min(df[df.quote=='usdt'].date)
@@ -930,6 +966,9 @@ class Coinmetrics:
         assert min_usdt_date >= np.min(usd_df[~usd_df.usd_per_usdt.isnull()].date)
         assert min_usdc_date >= np.min(usd_df[~usd_df.usd_per_usdc.isnull()].date)
         df = df.merge(usd_df, on='date', how='left', validate='many_to_one')
+        if bid_ask_data:
+            ba_df = ba_df.merge(usd_df, on='date', how='left', validate='many_to_one')
+            ba_df = ba_df.drop(columns='market', axis=1)
 
         # Form price column
         df['price_close'] = df.price_close.astype('float32')
@@ -938,12 +977,31 @@ class Coinmetrics:
         df.loc[df.quote=='usdt', 'usd_per_token_cm'] = df.loc[df.quote=='usdt', 'price_close']*df.loc[df.quote=='usdt', 'usd_per_usdt']
         assert 0 == df.usd_per_token_cm.isnull().sum()
         df = df.drop(columns=['quote', 'price_close', 'usd_per_usdc', 'usd_per_usdt'], axis=1)
+        if bid_ask_data:
+            ba_df['ask_price'] = ba_df.ask_price.astype('float32')
+            ba_df['bid_price'] = ba_df.bid_price.astype('float32')
+            ba_df.loc[ba_df.quote=='usd', 'usd_ask'] = ba_df.loc[ba_df.quote=='usd', 'ask_price']
+            ba_df.loc[ba_df.quote=='usdc', 'usd_ask'] = ba_df.loc[ba_df.quote=='usdc', 'ask_price']*ba_df.loc[ba_df.quote=='usdc', 'usd_per_usdc']
+            ba_df.loc[ba_df.quote=='usdt', 'usd_ask'] = ba_df.loc[ba_df.quote=='usdt', 'ask_price']*ba_df.loc[ba_df.quote=='usdt', 'usd_per_usdt']
+            ba_df.loc[ba_df.quote=='usd', 'usd_bid'] = ba_df.loc[ba_df.quote=='usd', 'bid_price']
+            ba_df.loc[ba_df.quote=='usdc', 'usd_bid'] = ba_df.loc[ba_df.quote=='usdc', 'bid_price']*ba_df.loc[ba_df.quote=='usdc', 'usd_per_usdc']
+            ba_df.loc[ba_df.quote=='usdt', 'usd_bid'] = ba_df.loc[ba_df.quote=='usdt', 'bid_price']*ba_df.loc[ba_df.quote=='usdt', 'usd_per_usdt']
+            assert 0 == ba_df.usd_ask.isnull().sum()
+            assert 0 == ba_df.usd_bid.isnull().sum()
+            ba_df = ba_df.drop(columns=['ask_price', 'bid_price', 'quote', 'usd_per_usdc', 'usd_per_usdt'], axis=1)
 
         # Form volume columns
         df['usd_volume_cm'] = df.candle_usd_volume.astype(float)
         df['trades_cm'] = df.candle_trades_count.astype(int)
         assert 0 == df.usd_volume_cm.isnull().sum()
         df = df.drop(columns=['candle_usd_volume', 'candle_trades_count'], axis=1)
+        if bid_ask_data:
+            ba_df['ask_size'] = ba_df.ask_size.astype('float32')
+            ba_df['bid_size'] = ba_df.bid_size.astype('float32')
+            ba_df['usd_ask_size'] = ba_df.ask_size*ba_df.usd_ask
+            ba_df['usd_bid_size'] = ba_df.bid_size*ba_df.usd_bid
+            assert 0 == ba_df.usd_ask_size.isnull().sum()
+            assert 0 == ba_df.usd_bid_size.isnull().sum()
 
         # collapse to the asset date level
         df.loc[df.usd_volume_cm==0, 'usd_volume_cm'] = 1
@@ -955,10 +1013,14 @@ class Coinmetrics:
                         'usd_volume_cm': total_volume, 
                         'trades_cm': total_trades}).reset_index()
         df.loc[df.usd_volume_cm==1, 'usd_volume_cm'] = 0
+        if bid_ask_data:
+            ba_prices_df = ba_df.groupby(['date', 'base'])[['usd_ask', 'usd_bid']].mean()
+            ba_vols_df = ba_df.groupby(['date', 'base'])[['usd_ask_size', 'usd_bid_size']].sum()
+            ba_df = ba_prices_df.merge(ba_vols_df, on=['date', 'base'], how='outer', validate='one_to_one')
+            ba_df = ba_df.reset_index()
+            df = df.merge(ba_df, on=['date', 'base'], how='outer', validate='one_to_one')
 
         # Check for valid ranges and dtypes
-        assert 0 == df.usd_per_token_cm.isnull().sum()
-        assert 0 == df.usd_volume_cm.isnull().sum()
         df = df[(df['usd_per_token_cm'] >= 0) & (df['usd_per_token_cm'] < 1e9)]
         df = df[(df['usd_volume_cm'] >= 0) & (df['usd_volume_cm'] < 5e11)]
         df = df[(df['trades_cm'] >= 0) & (df['trades_cm'] < 1e9)]
@@ -973,9 +1035,14 @@ class Coinmetrics:
         df = df.sort_values(by=['date', 'asset'], ignore_index=True)
 
         # Initial a final dataframe to return
-        final_df = pd.DataFrame(data={'date': [], 'asset': [], 'usd_per_token_cm': [], 
-                                    'usd_volume_cm': [], 'trades_cm': []})
-
+        if bid_ask_data:
+            final_df = pd.DataFrame(data={'date': [], 'asset': [], 'usd_per_token_cm': [], 
+                                        'usd_volume_cm': [], 'trades_cm': [],
+                                        'usd_ask': [], 'usd_bid': [], 'usd_ask_size': [], 'usd_bid_size': []})
+        else:
+            final_df = pd.DataFrame(data={'date': [], 'asset': [], 'usd_per_token_cm': [], 
+                                        'usd_volume_cm': [], 'trades_cm': []})
+            
         # Loop over all assets to add any missing days
         assets = list(np.unique(df.asset.values))
         for asset in assets:
@@ -1012,19 +1079,25 @@ class Coinmetrics:
                     datetime_to_add = num_datetime_to_add[i]
                     for j in range(1, datetime_to_add):
                         new_datetimes.append(start_datetime+np.timedelta64(j, 'h'))
-
+            
             # add the new days to the asset df
             new_asset_df = pd.DataFrame(data={'date': new_datetimes})
             new_asset_df['asset'] = asset
             asset_df = pd.concat((asset_df, new_asset_df))
             asset_df = asset_df.sort_values(by='date', ignore_index=True)
 
-            # forward fill the price column
+            # forward fill the price columns
             asset_df['usd_per_token_cm'] = asset_df.usd_per_token_cm.ffill()
+            if bid_ask_data:
+                asset_df['usd_ask'] = asset_df.usd_ask.ffill()
+                asset_df['usd_bid'] = asset_df.usd_bid.ffill()
 
             # replace volume and trades with zeros
             asset_df.loc[asset_df.usd_volume_cm.isnull(), 'usd_volume_cm'] = 0
             asset_df.loc[asset_df.trades_cm.isnull(), 'trades_cm'] = 0
+            if bid_ask_data:
+                asset_df.loc[asset_df.usd_ask_size.isnull(), 'usd_ask_size'] = 0
+                asset_df.loc[asset_df.usd_bid_size.isnull(), 'usd_bid_size'] = 0
 
             # add data to master df
             final_df = pd.concat((final_df, asset_df))
@@ -1034,9 +1107,11 @@ class Coinmetrics:
         df = final_df.copy()
         df = df.sort_values(by=['date', 'asset'], ignore_index=True)
         assert not df.duplicated(subset=['date', 'asset']).any()
-        assert 0 == df.isnull().sum().sum()
 
         return df
+
+
+    
 
     @staticmethod
     def cleanPanel(df: pd.DataFrame) -> pd.DataFrame:
@@ -1072,3 +1147,229 @@ class Coinmetrics:
         df = df.sort_values(by=['date', 'asset'], ignore_index=True)
 
         return df
+    
+    @staticmethod
+    def pullExchangeMetrics(base_url: str, base_params: Dict[str, str], target_exchange_metrics: List[str], 
+                            study_start: str, study_end: str, target_freq: str) -> pd.DataFrame:
+        '''
+        Returns a DataFrame containing Coinmetrics exchange metrics.
+
+        Args:
+            base_url (str): Base URL for the API.
+            base_params (Dict[str, str]): Base parameters for the API.
+            target_exchange_metrics (List[str]): List of metrics to pull for exchanges.
+            study_start (str): string time for the start of the study window in format 'YYYY-MM-DD'.
+            study_end (str): string time for the end of the study window in format 'YYYY-MM-DD'.
+            target_freq (str): the target frequency to study.
+
+        Returns:
+            pd.DataFrame: A pandas DataFrame containing metrics for the exchanges.
+        '''
+        # PULL EXCHANGE METRICS METADATA
+
+        # Build target URL and parameters
+        api_endpoint = "catalog-all/exchange-metrics"
+        url        = f"{base_url}{api_endpoint}"
+        params = base_params.copy()
+
+        # Call API and convert to DataFrame
+        response_json = Helper.makeApiCall(url, headers={}, params=params)
+        ex_metrics_df = pd.DataFrame(response_json['data'])
+
+        # Subset to target exchange metrics
+        ex_metrics_df = ex_metrics_df[ex_metrics_df.metric.isin(target_exchange_metrics)]
+
+        # PULL EXCHANGE METRICS
+
+        # Update url and params for exchange metric pull
+        api_endpoint = "timeseries/exchange-metrics"
+        url        = f"{base_url}{api_endpoint}"
+        api_params = {'page_size': 10000,
+                    'end_inclusive': False,
+                    'limit_per_exchange': 10000,
+                    'frequency': target_freq}
+        params = {**base_params, **api_params}
+
+        # Initialize a DataFrame for the results
+        df = pd.DataFrame(data={'exchange': [], 'time': []})
+
+        # Loop over the metrics to pull
+        for metric in target_exchange_metrics:
+            # monitor progress
+            print(f"Working on exchange metric {metric}.")
+
+            # Update parameters
+            params['metrics'] = metric
+
+            # pull exchanges for this metric
+            exchanges = ex_metrics_df[ex_metrics_df.metric==metric].frequencies.values[0][0]['exchanges']
+
+            # Initialize DataFrame for the metric
+            metric_df = pd.DataFrame()
+
+            # Loop over the exchanges for this metric
+            for exchange in exchanges:
+                # Update parameters
+                params['exchanges'] = exchange
+
+                # Form list of times to pull
+                time_list = Helper.generateYearlyCalendarYearDateList(study_start, study_end)
+
+                # Pull for all time periods
+                for j in range(len(time_list)-1):
+                    # Set time period to pull a calendar year at a time
+                    params['start_time'] = time_list[j]
+                    params['end_time'] = time_list[j+1]
+
+                    # Make the call and extract if there is data
+                    response_json = Helper.makeApiCall(url, headers={}, params=params)
+                    if response_json is not None:
+                        temp_df = pd.DataFrame(response_json['data'])
+                        metric_df = pd.concat([metric_df, temp_df])
+                    else: 
+                        continue
+        
+            # Drop duplicates
+            metric_df = metric_df.drop_duplicates(subset=['exchange', 'time'])
+                    
+            # Merge these exchange metrics to the master DataFrame
+            df = df.merge(metric_df, on=['exchange', 'time'], how='outer', validate='one_to_one')
+        
+        return df
+
+    @staticmethod
+    def cleanExchangeMetrics(df: pd.DataFrame, target_exchange_metrics: List[str], target_us_exchanges: List[str]) -> pd.DataFrame:
+        ''' Clean the DataFrame containing metrics at the datetime exchange level.
+        
+        Args:
+            df (pd.DataFrame): raw data of exchange, time, and metrics.
+            target_exchange_metrics (List[str]): List of metrics to pull for exchanges.
+            target_us_exchanges (List[str]): A list of strings with the target exchanges for this study.
+        
+        Returns:
+            df (pd.DataFrame): clean data at day level of exchange metrics and US exchange metrics.
+        '''
+        # Confirm data type
+        assert str == type(df.exchange.values[0])
+
+        # Form the date column
+        df['date'] = pd.to_datetime(df.time, utc=True).dt.tz_localize(None)
+        df = df.drop(columns='time', axis=1)
+
+        # Convert dtypes
+        cols = list(df.columns.values)
+        cols.remove('exchange')
+        cols.remove('date')
+        for col in cols:
+            df[col] = df[col].astype('float32')
+
+        # Collapse to datetime level
+        all_df = df.groupby('date')[target_exchange_metrics].sum()
+        us_df  = df[df.exchange.isin(target_us_exchanges)].groupby('date')[target_exchange_metrics].sum()
+
+        # Rename columns
+        for col in cols:
+            all_df = all_df.rename(columns={col: f"ex_{col}"})
+            us_df  = us_df.rename(columns={col: f"us_ex_{col}"})
+
+        # Merge together
+        df = all_df.merge(us_df, on=['date'], how='outer', validate='one_to_one')
+        df = df.reset_index()
+
+        # Assert consecutive hours for all metrics
+        total_hours_expected = 1+np.timedelta64(np.max(df.date)-np.min(df.date), 'h').astype(int)
+        assert df.shape[0] == total_hours_expected
+
+        # Confirm no missing obs
+        assert 0 == df.isnull().sum().sum()
+
+        # Confirm no duplicates
+        assert df.date.is_unique
+
+        return df.sort_values(by='date', ignore_index=True)
+
+    @staticmethod
+    def pullBidAsk(base_url: str, base_params: Dict[str, str], 
+               study_start: str, study_end: str, markets_df: pd.DataFrame) -> pd.DataFrame:
+        """ Returns a panel DataFrame containing time, market, bid price, bid size, ask price, and ask size.
+
+        Args:
+            base_url (str): Base URL for the API.
+            base_params (Dict[str, str]): Base parameters for the API.
+            study_start (str): string time for the start of the study window in format 'YYYY-MM-DD'.
+            study_end (str): string time for the end of the study window in format 'YYYY-MM-DD'.
+            markets_df (pd.DataFrame): A pandas DataFrame containing information about relevant markets.
+
+        Returns:
+            A pandas DataFrame panel of dates and markets with their ask_price, ask_size, bid_price, bid_size.
+        
+        """
+        # Initialize a DataFrame for the results
+        df = pd.DataFrame()
+
+        # Form list of markets
+        assert markets_df.market.is_unique
+        markets_list = list(markets_df.market.values)
+
+        # Build API URL
+        api_endpoint = "timeseries/market-quotes"
+        url = f"{base_url}{api_endpoint}"
+
+        # Define API parameters
+        api_params = {
+            'page_size': 10000,
+            'limit_per_market': 10000,
+            'end_inclusive': False
+        }
+
+        # Loop over the markets to pull bid ask data for
+        for i in range(len(markets_list)):
+            # update market to pull
+            market = markets_list[i]
+            params = {**base_params, **api_params, 'markets': market}
+
+            # monitor progress
+            print(f"Pulling bid ask data for market #{i+1} ({(i+1)/len(markets_list)*100:.2f}%): {market}")
+
+            # determine start and end times for this market
+            min_time = markets_df[markets_df.market==market].min_time.values[0]
+            max_time = markets_df[markets_df.market==market].max_time.values[0]
+            metric_start_dt = datetime.strptime(min_time[:10], '%Y-%m-%d')
+            metric_end_dt = datetime.strptime(max_time[:10], '%Y-%m-%d')
+            study_start_dt = datetime.strptime(study_start, '%Y-%m-%d')
+            study_end_dt = datetime.strptime(study_end, '%Y-%m-%d')
+            if study_start_dt >= metric_start_dt:
+                start_time = study_start_dt.strftime('%Y-%m-%d')
+            else:
+                start_time = metric_start_dt.strftime('%Y-%m-%d')
+            if study_end_dt <= metric_end_dt:
+                end_time = study_end_dt.strftime('%Y-%m-%d')
+            else:
+                end_time = metric_end_dt.strftime('%Y-%m-%d')
+            
+            # Make the API call
+            time_list = Helper.generateDailyDateList(start_time, end_time)
+            for j in range(len(time_list)-1):
+                params['start_time'] = time_list[j]
+                params['end_time'] = time_list[j+1]
+                response_json = Helper.makeApiCall(url, headers={}, params=params)
+                if (response_json is not None) & (len(response_json['data']) > 0):
+                    # convert to DataFrame
+                    temp_df = pd.DataFrame(response_json['data'])
+
+                    # convert time column to a numpy.datetime64 type
+                    temp_df['date'] =  pd.to_datetime(temp_df.time, utc=True).dt.tz_localize(None)
+                    temp_df = temp_df.drop(columns='time', axis=1)
+
+                    # resample the data to the hourly level keeping the last observation in each hour
+                    temp_df = temp_df.sort_values(by='date')
+                    temp_df['date'] = temp_df.date.dt.ceil('H')
+                    temp_df = temp_df.drop_duplicates(subset='date', keep='last')
+
+                    # subset and order columns and add to master DataFrame
+                    temp_df = temp_df[['date', 'market', 'ask_price', 'ask_size', 'bid_price', 'bid_size']]
+                    df = pd.concat((df, temp_df))
+                else:
+                    continue
+        
+        return df.sort_values(by='date', ignore_index=True)
