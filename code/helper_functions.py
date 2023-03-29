@@ -1,13 +1,13 @@
 import requests
 import time
 import logging
-logger = logging.getLogger(__name__)
 from typing import Any, Dict, Optional, List
 import random
 from datetime import datetime, timedelta
 import pandas as pd
-import numpy as np
 from itertools import chain
+import numpy as np
+logger = logging.getLogger(__name__)
 
 class Helper:
     """ Class of helper functions specific to crypto asset pricing project. """
@@ -35,7 +35,7 @@ class Helper:
 
         for attempt in range(retries):
             try:
-                response = requests.get(url, headers=headers, params=params, timeout=5)
+                response = requests.get(url, headers=headers, params=params, timeout=8)
                 response.raise_for_status()
                 return response.json()
             except requests.exceptions.HTTPError as e:
