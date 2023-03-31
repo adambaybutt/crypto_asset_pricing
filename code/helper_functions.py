@@ -1110,9 +1110,6 @@ class Coinmetrics:
 
         return df
 
-
-    
-
     @staticmethod
     def cleanPanel(df: pd.DataFrame) -> pd.DataFrame:
         """ Some light cleaning of the panel as I will do more in the formal cleaning script.
