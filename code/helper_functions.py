@@ -126,6 +126,47 @@ class Helper:
         sorted_unique_assets = sorted(list(unique_assets))
 
         return sorted_unique_assets
+    
+    @staticmethod
+    def xsecNormalizeToMinusOneOne(df: pd.DataFrame, target_col: str, asset_col: str) -> pd.DataFrame:
+        """
+        Normalize the target_col within each date in the input DataFrame, creating a new
+        column target_col+`_norm` with values equally spaced between -1 and 1.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            A pandas DataFrame with columns: date, asset_cg, target_col, and others.
+        target_col: str
+            Name of the target column to normalize.
+        asset_col: str
+            Name of the column containing the names of the assets.
+
+        Returns
+        -------
+        pd.DataFrame
+            The updated DataFrame with a new column containing the normalized values 
+            of target_col within each date.
+        """
+        # randomly sort rows before the sort by target col to ties are randomly sorted
+        df = df.sample(frac=1).reset_index(drop=True)
+
+        # sort df by date and target col
+        df = df.sort_values(by=['date', target_col], ignore_index=True)
+
+        # define a custom function to add linearly spaced values within each group
+        def addLinspace(group):
+            n_rows = len(group)
+            group[target_col+'_norm'] = np.linspace(-1, 1, n_rows)
+            return group
+
+        # add the linearly spaced column between -1 and 1 within each date of the DataFrame
+        df = df.groupby('date', group_keys=True).apply(addLinspace).reset_index(drop=True)
+
+        # clean up by resorting
+        df = df.sort_values(by=['date', asset_col], ignore_index=True)
+        
+        return df
 
 class CoinAPI:
     """ Class of helper functions specific to working with CoinAPI."""
