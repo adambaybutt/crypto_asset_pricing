@@ -14,7 +14,7 @@ class Helper:
 
     @staticmethod
     def makeApiCall(url: str, headers: Optional[Dict[str, str]], params: Optional[Dict[str, str]] = None, 
-                    retries: int = 4, timeout: int = 5) -> Optional[Dict[str, Any]]:
+                    retries: int = 5, timeout: int = 5) -> Optional[Dict[str, Any]]:
         """
         Makes an API call to the given endpoint with the given parameters.
 
@@ -1287,7 +1287,7 @@ class Coinmetrics:
 
     @staticmethod
     def pullBidAsk(base_url: str, base_params: Dict[str, str], 
-               study_start: str, study_end: str, markets_df: pd.DataFrame) -> pd.DataFrame:
+                   study_start: str, study_end: str, markets_df: pd.DataFrame) -> pd.DataFrame:
         """ Returns a panel DataFrame containing time, market, bid price, bid size, ask price, and ask size.
 
         Args:
@@ -1350,23 +1350,25 @@ class Coinmetrics:
                 params['start_time'] = time_list[j]
                 params['end_time'] = time_list[j+1]
                 response_json = Helper.makeApiCall(url, headers={}, params=params)
-                if (response_json is not None) & (len(response_json['data']) > 0):
-                    # convert to DataFrame
-                    temp_df = pd.DataFrame(response_json['data'])
+                time.sleep(0.1)
+                if type(response_json) == dict:
+                    if 'data' in response_json.keys():
+                        if len(response_json['data']) > 0:
+                            # convert to DataFrame
+                            temp_df = pd.DataFrame(response_json['data'])
 
-                    # convert time column to a numpy.datetime64 type
-                    temp_df['date'] =  pd.to_datetime(temp_df.time, utc=True).dt.tz_localize(None)
-                    temp_df = temp_df.drop(columns='time', axis=1)
+                            # convert time column to a numpy.datetime64 type
+                            temp_df['date'] =  pd.to_datetime(temp_df.time, utc=True).dt.tz_localize(None)
+                            temp_df = temp_df.drop(columns='time', axis=1)
 
-                    # resample the data to the hourly level keeping the last observation in each hour
-                    temp_df = temp_df.sort_values(by='date')
-                    temp_df['date'] = temp_df.date.dt.ceil('H')
-                    temp_df = temp_df.drop_duplicates(subset='date', keep='last')
+                            # resample the data to the hourly level keeping the last observation in each hour
+                            temp_df = temp_df.sort_values(by='date')
+                            temp_df['date'] = temp_df.date.dt.ceil('H')
+                            temp_df = temp_df.drop_duplicates(subset='date', keep='last')
 
-                    # subset and order columns and add to master DataFrame
-                    temp_df = temp_df[['date', 'market', 'ask_price', 'ask_size', 'bid_price', 'bid_size']]
-                    df = pd.concat((df, temp_df))
-                else:
-                    continue
+                            # subset and order columns and add to master DataFrame
+                            temp_df = temp_df[['date', 'market', 'ask_price', 'ask_size', 'bid_price', 'bid_size']]
+                            df = pd.concat((df, temp_df))
+
         
         return df.sort_values(by='date', ignore_index=True)

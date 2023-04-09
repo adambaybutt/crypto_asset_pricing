@@ -20,21 +20,21 @@ def pullMccrakenMacro(mccraken_url: str, mccraken_raw_fp: str) -> None:
     with open(mccraken_raw_fp, "wb") as f:
         f.write(response.content)
 
-def pullTIPS(tips_fred_names: list) -> pd.DataFrame:
+def pullTRates(fred_names: list) -> pd.DataFrame:
     """
-    Get TIPS data from FRED for a list of series names.
+    Get Treasury rate data from FRED for a list of series names.
     
     Parameters:
-        tips_fred_names (list of str): List of series names for TIPS on FRED.
+        fred_names (list of str): List of series names on FRED.
         
     Returns:
-        df (pandas.DataFrame): time series data containing the TIPS data for each series.
+        df (pandas.DataFrame): time series data containing the treasury data for each series.
     """
     # set the start date 
     start_date = '2014-01-01'
 
-    # use the FRED API to get the TIPS data for each series name
-    dfs = [pdr.DataReader(name, 'fred', start_date) for name in tips_fred_names]
+    # use the FRED API to get the data for each series name
+    dfs = [pdr.DataReader(name, 'fred', start_date) for name in fred_names]
 
     # concatenate the data for all series into a single DataFrame
     df = pd.concat(dfs, axis=1)
@@ -96,15 +96,16 @@ if __name__ == "__main__":
     # set args
     mccraken_url = "https://files.stlouisfed.org/files/htdocs/fred-md/monthly/2023-01.csv"
     mccraken_raw_fp = '../data/raw/mccraken_macro.csv'
-    tips_fred_names = ['DFII5', 'DFII7', 'DFII10', 'DFII20', 'DFII30']
-    tips_fp = '../data/raw/tips_macro.pkl'
+    fred_names = ['DGS1MO', 'DFII5', 'DFII7', 'DFII10', 'DFII20', 'DFII30']
+    t_fp = '../data/raw/treasury_macro.pkl'
     u_fp    = '../data/raw/uncertainty_macro.pkl'
+    
     # pull raw mccracken data
     mccraken_df = pullMccrakenMacro(mccraken_url, mccraken_raw_fp)
 
-    # pull TIPS
-    tips_df = pullTIPS(tips_fred_names)
-    tips_df.to_pickle(tips_fp)
+    # pull treasury rates
+    t_df = pullTRates(fred_names)
+    t_df.to_pickle(t_fp)
 
     # pull uncertainty data
     u_df = pullPolicyUncertainty()
