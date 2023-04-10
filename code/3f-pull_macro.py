@@ -96,7 +96,10 @@ if __name__ == "__main__":
     # set args
     mccraken_url = "https://files.stlouisfed.org/files/htdocs/fred-md/monthly/2023-01.csv"
     mccraken_raw_fp = '../data/raw/mccraken_macro.csv'
-    fred_names = ['DGS1MO', 'DFII5', 'DFII7', 'DFII10', 'DFII20', 'DFII30']
+    fred_names = ['DGS1MO', 'DFII5', 'DFII7', 'DFII10', 'DFII20', 'DFII30',
+        'T5YIE', 'T10YIE', 'T20YIEM', 'T30YIEM',
+        'EXPINF1YR', 'EXPINF2YR', 'EXPINF3YR', 
+        'EXPINF5YR', 'EXPINF10YR', 'EXPINF20YR', 'EXPINF30YR']
     t_fp = '../data/raw/treasury_macro.pkl'
     u_fp    = '../data/raw/uncertainty_macro.pkl'
     
