@@ -1165,6 +1165,11 @@ class Coinmetrics:
         df['date'] = pd.to_datetime(df.time, utc=True).dt.tz_localize(None)
         df = df.drop(columns='time', axis=1)
 
+        # Remove bad columns if there are them
+        cols_to_drop = [col for col in df.columns if '-status' in col]
+        if len(cols_to_drop) > 0:
+            df = df.drop(cols_to_drop, axis=1)
+
         # Cut down to relevant dates
         df = df[df.date <= '2023-01-02']
 
