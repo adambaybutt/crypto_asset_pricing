@@ -127,11 +127,9 @@ class Helper:
 
         return sorted_unique_assets
     
-    @staticmethod
-    def xsecNormalizeToMinusOneOne(df: pd.DataFrame, target_col: str, asset_col: str) -> pd.DataFrame:
-        """
-        Normalize the target_col within each date in the input DataFrame, creating a new
-        column target_col+`_norm` with values equally spaced between -1 and 1.
+    def xsecNormalizeToMinusOneOne(df: pd.DataFrame, target_col: str, asset_col: str='asset') -> pd.DataFrame:
+        """ Normalize the target_col within each date in the input DataFrame, replacing the column
+            with values equally spaced between -1 and 1.
 
         Parameters
         ----------
@@ -151,21 +149,21 @@ class Helper:
         # randomly sort rows before the sort by target col to ties are randomly sorted
         df = df.sample(frac=1).reset_index(drop=True)
 
-        # sort df by date and target col
-        df = df.sort_values(by=['date', target_col], ignore_index=True)
+        # Create a rank column for each group (date) based on the target column
+        df[f"{target_col}_rank"] = df.groupby("date")[target_col].rank(method="first")
 
-        # define a custom function to add linearly spaced values within each group
-        def addLinspace(group):
-            n_rows = len(group)
-            group[target_col+'_norm'] = np.linspace(-1, 1, n_rows)
-            return group
+        # Calculate the total count for each group (date)
+        group_counts = df.groupby("date")[target_col].count()
 
-        # add the linearly spaced column between -1 and 1 within each date of the DataFrame
-        df = df.groupby('date', group_keys=True).apply(addLinspace).reset_index(drop=True)
+        # Map the total count for each date to the corresponding rank column
+        df["group_count"] = df["date"].map(group_counts)
 
-        # clean up by resorting
-        df = df.sort_values(by=['date', asset_col], ignore_index=True)
-        
+        # Calculate the normalized value
+        df[f"{target_col}"] = ((df[f"{target_col}_rank"] - 1) / (df["group_count"] - 1)) * 2 - 1
+
+        # Drop the intermediate columns
+        df.drop(columns=[f"{target_col}_rank", "group_count"], inplace=True)
+
         return df
 
 class CoinAPI:
