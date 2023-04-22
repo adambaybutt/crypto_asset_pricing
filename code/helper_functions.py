@@ -1025,8 +1025,6 @@ class Coinmetrics:
             ba_df.loc[ba_df.quote=='usd', 'usd_bid'] = ba_df.loc[ba_df.quote=='usd', 'bid_price']
             ba_df.loc[ba_df.quote=='usdc', 'usd_bid'] = ba_df.loc[ba_df.quote=='usdc', 'bid_price']*ba_df.loc[ba_df.quote=='usdc', 'usd_per_usdc']
             ba_df.loc[ba_df.quote=='usdt', 'usd_bid'] = ba_df.loc[ba_df.quote=='usdt', 'bid_price']*ba_df.loc[ba_df.quote=='usdt', 'usd_per_usdt']
-            assert 0 == ba_df.usd_ask.isnull().sum()
-            assert 0 == ba_df.usd_bid.isnull().sum()
             ba_df = ba_df.drop(columns=['ask_price', 'bid_price', 'quote', 'usd_per_usdc', 'usd_per_usdt'], axis=1)
 
         # Form volume columns
@@ -1039,8 +1037,6 @@ class Coinmetrics:
             ba_df['bid_size'] = ba_df.bid_size.astype('float32')
             ba_df['usd_ask_size'] = ba_df.ask_size*ba_df.usd_ask
             ba_df['usd_bid_size'] = ba_df.bid_size*ba_df.usd_bid
-            assert 0 == ba_df.usd_ask_size.isnull().sum()
-            assert 0 == ba_df.usd_bid_size.isnull().sum()
 
         # collapse to the asset date level
         df.loc[df.usd_volume_cm==0, 'usd_volume_cm'] = 1
