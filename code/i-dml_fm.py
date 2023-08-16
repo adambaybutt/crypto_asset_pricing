@@ -1,10 +1,10 @@
+from sklearn.linear_model import Lasso
+from joblib import Parallel, delayed
+from ipca import InstrumentedPCA
+import statsmodels.api as sm
+from scipy.stats import norm
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import Lasso
-from scipy.stats import norm
-from joblib import Parallel, delayed
-import statsmodels.api as sm
-from ipca import InstrumentedPCA
 
 def genAR1Process(mu: float, phi: float, sigma: float, T: int) -> np.ndarray:
     """
