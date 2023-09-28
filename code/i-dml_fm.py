@@ -772,7 +772,6 @@ if __name__ == "__main__":
                                       'var':   [var_b, var_ipca],
                                       'mse':   [mse_b, mse_ipca]})
     results_df.to_csv('../output/high_dim_fm/sim.csv') # TODO change to read in, append, and resave to hidden raw sheet of excel file
-    
 
 # TODO REMOVE
 # import os
